@@ -45,6 +45,12 @@ def pgcli_bindings(pgcli):
         _logger.debug("Detected F5 key.")
         pgcli.explain_mode = not pgcli.explain_mode
 
+    @kb.add("f6")
+    def _(event):
+        """Toggle LLM Input Mode."""
+        _logger.debug("Detected F6 key.")
+        pgcli.llm_mode = not pgcli.llm_mode
+
     @kb.add("tab")
     def _(event):
         """Force autocompletion at cursor on non-empty lines."""

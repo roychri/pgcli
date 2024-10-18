@@ -1,6 +1,7 @@
 from configobj import ConfigObj, ParseError
 from pgspecial.namedqueries import NamedQueries
 from .config import skip_initial_comment
+from .llm_api import generate_sql, llm_append_output
 
 import atexit
 import os
@@ -190,6 +191,9 @@ class PGCli:
         self.pgexecute = pgexecute
         self.dsn_alias = None
         self.watch_command = None
+        self.llm_mode = False
+        self.is_llm_output = False
+        self.llm_errors = 0
 
         # Load config.
         c = self.config = get_config(pgclirc_file)
@@ -805,9 +809,31 @@ class PGCli:
             editor_command = special.editor_command(text)
         return text
 
+    def generate_sql_with_llm(self, user_input):
+        response = generate_sql(self, user_input)
+        return response
+
     def execute_command(self, text, handle_closed_connection=True):
         logger = self.logger
 
+        if self.llm_mode:
+            # Send the input text to the LLM and get the SQL query
+            try:
+                sql_query = self.generate_sql_with_llm(text)
+                if sql_query:
+                    # Proceed to execute the generated SQL query
+                    self.llm_mode = False
+                    self.is_llm_output = True
+                    print(f"> {sql_query}")
+                    resp = self.execute_command(sql_query, handle_closed_connection)
+                    self.llm_mode = True
+                    self.is_llm_output = False
+                    return resp
+                else:
+                    click.secho("LLM did not return a SQL query.", fg="yellow")
+            except Exception as e:
+                click.secho(f"Error communicating with LLM: {e}", fg="red")
+            return
         query = MetaQuery(query=text, successful=False)
 
         try:
@@ -869,7 +895,25 @@ class PGCli:
                     except OSError as e:
                         click.secho(str(e), err=True, fg="red")
                 else:
-                    if output:
+                    if not query.successful and self.is_llm_output:
+                        if output:
+                            self.echo_via_pager("\n".join(output))
+                            self.llm_errors += 1
+                            if self.llm_errors > 3:
+                                self.echo_via_pager("Too Many Errors")
+                                return
+                            self.llm_mode = True
+                            resp = self.execute_command("\n".join(output), handle_closed_connection)
+                            self.llm_mode = False
+                            return resp;
+                        else:
+                            self.echo_via_pager("LLM output missing!")
+                    elif output:
+                        self.llm_errors = 0
+                        if len(output) < 25 and len("\n".join(output)) < 2000:
+                            llm_append_output("user", "\n".join(output))
+                        else:
+                            llm_append_output("user", "\n".join(output[:25]))
                         self.echo_via_pager("\n".join(output))
 
                 # Log to file in addition to normal output

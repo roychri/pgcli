@@ -72,3 +72,4 @@ venv/
 
 .ropeproject/
 
+.aider*
