@@ -16,7 +16,16 @@ Make sure the SQL returns data in a human readable format and augmented with any
 You only return SQL queries and nothing else.
 No matter what, you need to return valid SQL, including comments (-- ...).
 If we ask the for the current time, return `select NOW()`.
-Do not return any blockquote. Do not return markdown. Just SQL."""
+Do not return any blockquote. Do not return markdown. Just SQL.
+Expected output for SQL (write comments before SQL, to allow you to think)
+-- explanation
+SELECT -- let's format ...
+  LOWER(code) code
+FROM mytable
+WHERE
+  -- explanation/thoughts
+  condition
+"""
     },
     {
         "role": "user",
@@ -54,24 +63,39 @@ public,group_classes,Contains group x classes that are available. Use the clubs.
     },
     {
         "role": "assistant",
-        "content": """SELECT
+        "content": """
+-- I'll query the group_classes and join with clubs to show proper timezone of start time.
+-- Let's show the most important fields and format them properly.
+-- I'll Extract the Coach's name from the JSON field and I'll concatenate club name and number.
+SELECT
+    -- the id field seems obvious
     gx.id,
+    -- The schedule_id is helpful to be able to reference this with 24hf.
     gx.schedule_id,
+    -- The name of the class so we know which class this is about
     gx.name,
+    -- when the class starts, in the timezone of the club
     gx.start_time AT TIME ZONE c.timezone AS start_time,
+    -- The name of the class coach
     gx.instructors->0->>'FirstName' AS coach,
+    -- Which room the class occurs in
     gx.room,
+    -- Which club this class takes place
     gx.club_number || ' - ' || c.name AS club,
+    -- What type of class this is
     gx.training_type,
+    -- When this was created for begugging purposes
     gx.created_at,
+    -- If this class is deleted or not.
     gx.deleted_at IS NOT NULL AS deleted
 FROM
     group_classes gx
-JOIN
+JOIN -- Used to find the timezone for the start_time
     clubs c ON c.id = gx.club_id
-WHERE
+WHERE -- Let's find the instructor that was requested
     gx.instructors->0->>'InstructorID' = '38365'
-ORDER BY
+ORDER BY -- Since this table uses auto increment int id, the most recent is the higest id
+        -- It will be faster this way than using the gx.created_at field since id is idx.
     gx.id DESC
 LIMIT 1;"""
     },
@@ -81,25 +105,33 @@ LIMIT 1;"""
     },
     {
         "role": "assistant",
-        "content": """SELECT
+        "content": """
+-- We will query the users table and join with members and checkins
+-- Formating the output properly is important for humans.
+-- Because we need a count with a subcount of checkins, it's best to use a subquery
+SELECT
     to_char(COUNT(*)::numeric, 'FM999,999,999,999') AS active_users -- Format to human readable
 FROM (
     SELECT
         u.id
     FROM
         users u
-    JOIN
-        members m ON m.id = u.member_id -- Ensure the user is an active member
-    JOIN
-        checkins c ON c.member_id = m.id -- Checkin records
+    JOIN -- Ensure the user is an active member
+        members m ON m.id = u.member_id
+    JOIN -- Checkin records
+        checkins c ON c.member_id = m.id
     WHERE
-        m.is_active = TRUE -- Ensure the user is an active member
-        AND m.deleted_at IS NULL -- Ensure the member is not deleted
-        AND c.deleted_at IS NULL -- Ensure checkins are not deleted
-    GROUP BY
+        -- Ensure the user is an active member
+        m.is_active = TRUE
+        -- Ensure the member is not deleted
+        AND m.deleted_at IS NULL
+        -- Ensure checkins are not deleted
+        AND c.deleted_at IS NULL
+    GROUP BY -- counting unique users
         u.id
     HAVING
-        COUNT(c.id) >= 5 -- The user has checked in at least 5 times
+        -- The user has checked in at least 5 times
+        COUNT(c.id) >= 5
 ) subquery;"""
     }
 ]
