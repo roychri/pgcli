@@ -302,6 +302,29 @@ def generate_sql(pgcli, user_input):
                     "additionalProperties": False
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_indexes",
+                "description": "Get indexes for a table in the current database.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "table_name": {
+                            "type": "string",
+                            "description": "The name of the table to get indexes for"
+                        },
+                        "schema": {
+                            "type": "string",
+                            "description": "The schema of the table (default is 'public')",
+                            "default": "public"
+                        }
+                    },
+                    "required": [ "table_name" ],
+                    "additionalProperties": False
+                }
+            }
         }
     ]
 
@@ -456,5 +479,36 @@ FROM
 WHERE
      pg_stat_user_tables.schemaname = '{schema}'
      AND pg_stat_user_tables.relname = '{table_name}';"""
+    )
+    return "\n".join(output)
+
+@with_default_args
+def get_indexes(pgcli, table_name, schema="public"):
+    print(f"...getting indexes for table {table_name} in {schema}...")
+    output, query = pgcli._evaluate_command(
+        f"""SELECT
+     i.relname AS index_name,
+     a.attname AS column_name,
+     ix.indisunique AS is_unique,
+     ix.indisprimary AS is_primary,
+     am.amname AS index_type,
+     pg_get_indexdef(i.oid) AS index_definition
+FROM
+     pg_class t,
+     pg_class i,
+     pg_index ix,
+     pg_attribute a,
+     pg_am am
+WHERE
+     t.oid = ix.indrelid
+     AND i.oid = ix.indexrelid
+     AND a.attrelid = t.oid
+     AND a.attnum = ANY(ix.indkey)
+     AND t.relkind = 'r'
+     AND t.relname = '{table_name}'
+     AND t.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = '{schema}')
+     AND i.relam = am.oid
+ORDER BY
+     i.relname;"""
     )
     return "\n".join(output)
