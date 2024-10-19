@@ -907,7 +907,7 @@ class PGCli:
                             self.echo_via_pager("\n".join(output))
                             self.llm_errors += 1
                             if self.llm_errors > 3:
-                                self.echo_via_pager("Too Many Errors from LLM", err=True, fg="red")
+                                click.secho("Too Many Errors from LLM", err=True, fg="red")
                                 return
                             self.llm_mode = True
                             resp = self.execute_command("\n".join(output), handle_closed_connection)
