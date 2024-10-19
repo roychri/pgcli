@@ -5,6 +5,18 @@ import openai
 from datetime import datetime
 import pathlib
 from pathlib import Path
+import inspect
+from typing import Callable
+from functools import wraps
+
+def with_default_args(func: Callable) -> Callable:
+    @wraps(func)
+    def wrapper(pgcli, *args, **kwargs):
+        sig = inspect.signature(func)
+        bound_args = sig.bind(pgcli, *args, **kwargs)
+        bound_args.apply_defaults()
+        return func(*bound_args.args, **bound_args.kwargs)
+    return wrapper
 
 # Set up the OpenAI API key
 openai.api_key = os.environ.get("OPENAI_API_KEY")
@@ -330,21 +342,13 @@ def generate_sql(pgcli, user_input):
                     function_name = tool_call.function.name
                     function_args = json.loads(tool_call.function.arguments)
 
-                    # Execute the function
-                    if function_name == "get_tables":
-                        function_response = get_tables(pgcli)
-                    elif function_name == "describe_tables":
-                        schema = function_args.get('schema', 'public')
-                        table_names = function_args["table_names"]
-                        function_response = describe_tables(pgcli, table_names, schema)
-                    elif function_name == "describe_enum":
-                        enum_name = function_args["enum_name"]
-                        schema = function_args.get('schema', 'public')
-                        function_response = describe_enum(pgcli, enum_name, schema)
-                    elif function_name == "get_table_statistics":
-                        table_name = function_args["table_name"]
-                        schema = function_args.get('schema', 'public')
-                        function_response = get_table_statistics(pgcli, table_name, schema)
+                    # Execute the function dynamically
+                    function_to_call = globals().get(function_name)
+                    if function_to_call:
+                        # Prepare arguments
+                        args = [pgcli]
+                        args.extend(function_args.values())
+                        function_response = function_to_call(*args)
                     else:
                         function_response = json.dumps({"error": f"Function {function_name} not found"})
 
@@ -365,6 +369,7 @@ def generate_sql(pgcli, user_input):
             # Handle any API errors
             raise Exception(f"An issue occurred with the OpenAI API. {str(e)}")
 
+@with_default_args
 def get_tables(pgcli):
     print("...Listing tables...")
     output, query = pgcli._evaluate_command(
@@ -386,6 +391,7 @@ ORDER BY
     )
     return "\n".join(output)
 
+@with_default_args
 def describe_tables(pgcli, table_names, schema="public"):
     table_names_joined = "'" + "', '".join(table_names)  + "'"
     print(f"...describing tables {table_names_joined} in {schema}...")
@@ -408,6 +414,7 @@ WHERE
     )
     return "\n".join(output)
 
+@with_default_args
 def describe_enum(pgcli, enum_name, schema="public"):
     print(f"...describing enum {enum_name} in {schema}...")
     output, query = pgcli._evaluate_command(
@@ -429,6 +436,7 @@ ORDER BY
     )
     return "\n".join(output)
 
+@with_default_args
 def get_table_statistics(pgcli, table_name, schema="public"):
     print(f"...getting statistics for table {table_name} in {schema}...")
     output, query = pgcli._evaluate_command(
