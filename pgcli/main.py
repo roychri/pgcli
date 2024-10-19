@@ -233,6 +233,7 @@ class PGCli:
         connect_timeout: int | None = None,
         log_file: str | None = None,
         force_destructive: bool = False,
+        llm_log_dir: str | None = None,
     ):
         self.force_passwd_prompt = force_passwd_prompt
         self.never_passwd_prompt = never_passwd_prompt
@@ -243,6 +244,7 @@ class PGCli:
         self.llm_mode = False
         self.is_llm_output = False
         self.llm_errors = 0
+        self.llm_log_dir = llm_log_dir
 
         # Load config.
         c = self.config = get_config(pgclirc_file)
@@ -1767,6 +1769,11 @@ class PGCli:
     type=click.Path(exists=True, readable=True, dir_okay=False),
     help="execute commands from file, then exit. Multiple -f options are allowed.",
 )
+@click.option(
+    "--llm-log-dir",
+    default=None,
+    help="Specify the directory for LLM interaction logs. Use 'disable' to turn off logging.",
+)
 @click.argument("dbname", default=lambda: None, envvar="PGDATABASE", nargs=1)
 @click.argument("username", default=lambda: None, envvar="PGUSER", nargs=1)
 def cli(
@@ -1800,6 +1807,7 @@ def cli(
     force_destructive: bool,
     input_files: tuple,
     connect_timeout: int | None,
+    llm_log_dir: str,
 ):
     if version:
         print("Version:", __version__)
@@ -1866,6 +1874,7 @@ def cli(
         log_file=log_file,
         force_destructive=force_destructive,
         connect_timeout=connect_timeout,
+        llm_log_dir=llm_log_dir,
     )
 
     # Store commands for -c option (can be multiple)

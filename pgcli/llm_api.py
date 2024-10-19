@@ -2,9 +2,15 @@ import os
 import json
 from openai import OpenAI
 import openai
+from datetime import datetime
+import pathlib
+from pathlib import Path
 
 # Set up the OpenAI API key
 openai.api_key = os.environ.get("OPENAI_API_KEY")
+
+# Set up the log directory
+LOG_DIR = None
 
 messages = [
     {
@@ -142,6 +148,36 @@ def llm_append_output(role, output):
         "content": output
     })
 
+def log_llm_interaction(request, response, log_dir=None):
+    """
+    Logs the LLM request and response to a file.
+
+    Parameters:
+        request (dict): The request sent to the LLM.
+        response (object): The response received from the LLM.
+        log_dir (str): The directory to save the log files. If None, logging is disabled.
+    """
+    if log_dir is None or log_dir == 'disable':
+        return
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir_path = Path(log_dir)
+    log_dir_path.mkdir(parents=True, exist_ok=True)
+
+    log_file = log_dir_path / f"llm_interaction_{timestamp}.json"
+    
+    # Convert request and response to serializable format
+    serializable_request = json.loads(json.dumps(request, default=str))
+    serializable_response = json.loads(json.dumps(response.model_dump(), default=str))
+    
+    log_data = {
+        "timestamp": timestamp,
+        "request": serializable_request,
+        "response": serializable_response
+    }
+    with open(log_file, "w") as f:
+        json.dump(log_data, f, indent=2)
+
 def generate_sql(pgcli, user_input):
     """
     Generates an SQL query based on the user's input using OpenAI's GPT-4o-mini model.
@@ -217,12 +253,18 @@ def generate_sql(pgcli, user_input):
             if loop_counter > 10:
                 raise Exception("Infinite Loop detected")
 
+            # Prepare the request
+            request = {
+                "model": MODEL,
+                "messages": messages,
+                "tools": functions,
+            }
+
             # Call the OpenAI Chat Completions API
-            response = generate_sql.client.chat.completions.create(
-                model=MODEL,
-                messages=messages,
-                tools=functions,
-            )
+            response = generate_sql.client.chat.completions.create(**request)
+
+            # Log the interaction
+            log_llm_interaction(request, response, pgcli.llm_log_dir)
 
             # Extract the assistant's message
             message = response.choices[0].message
