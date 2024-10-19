@@ -31,6 +31,8 @@ FROM mytable
 WHERE
   -- explanation/thoughts
   condition
+  -- more reasonning
+  AND condition2
 """
     },
     {
