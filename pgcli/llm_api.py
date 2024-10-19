@@ -195,8 +195,15 @@ def generate_sql(pgcli, user_input):
             # Extract the assistant's message
             message = response.choices[0].message
             messages.append(message)
-            # Check if the assistant wants to call a function
-            if response.choices[0].finish_reason == "tool_calls":
+
+            # Handle edge cases
+            finish_reason = response.choices[0].finish_reason
+            if finish_reason == "length":
+                raise Exception("The conversation was too long. Please try a shorter query.")
+            elif finish_reason == "content_filter":
+                raise Exception("The content was filtered. Please rephrase your query.")
+            elif finish_reason == "tool_calls" or (finish_reason == "stop" and message.tool_calls):
+                # Handle tool calls
                 for tool_call in message.tool_calls:
                     function_name = tool_call.function.name
                     function_args = json.loads(tool_call.function.arguments)
@@ -217,10 +224,12 @@ def generate_sql(pgcli, user_input):
                         "content": function_response,
                         "tool_call_id": tool_call.id
                     })
-            else:
+            elif finish_reason == "stop":
                 # Assistant has provided the final answer
                 sql_query = message.content.strip()
                 return sql_query
+            else:
+                raise Exception(f"Unexpected response from the model. Finish reason: {finish_reason}")
 
         except openai.OpenAIError as e:
             # Handle any API errors
