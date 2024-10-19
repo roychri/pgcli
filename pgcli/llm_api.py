@@ -244,6 +244,29 @@ def generate_sql(pgcli, user_input):
                     "additionalProperties": False
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "describe_enum",
+                "description": "Describe an enum in the current database.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "enum_name": {
+                            "type": "string",
+                            "description": "The name of the enum to describe"
+                        },
+                        "schema": {
+                            "type": "string",
+                            "description": "The schema of the enum (default is 'public')",
+                            "default": "public"
+                        }
+                    },
+                    "required": [ "enum_name" ],
+                    "additionalProperties": False
+                }
+            }
         }
     ]
 
@@ -291,6 +314,10 @@ def generate_sql(pgcli, user_input):
                         schema = function_args.get('schema', 'public')
                         table_names = function_args["table_names"]
                         function_response = describe_tables(pgcli, table_names, schema)
+                    elif function_name == "describe_enum":
+                        enum_name = function_args["enum_name"]
+                        schema = function_args.get('schema', 'public')
+                        function_response = describe_enum(pgcli, enum_name, schema)
                     else:
                         function_response = json.dumps({"error": f"Function {function_name} not found"})
 
@@ -351,5 +378,26 @@ LEFT JOIN
 WHERE
      cols.table_schema = '{schema}'
      AND cols.table_name in ({table_names_joined});"""
+    )
+    return "\n".join(output)
+
+def describe_enum(pgcli, enum_name, schema="public"):
+    print(f"...describing enum {enum_name} in {schema}...")
+    output, query = pgcli._evaluate_command(
+        f"""SELECT
+     e.enumlabel AS enum_value,
+     e.enumsortorder AS sort_order
+FROM
+     pg_type t
+JOIN
+     pg_enum e ON t.oid = e.enumtypid
+JOIN
+     pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+WHERE
+     t.typtype = 'e'
+     AND n.nspname = '{schema}'
+     AND t.typname = '{enum_name}'
+ORDER BY
+     e.enumsortorder;"""
     )
     return "\n".join(output)
