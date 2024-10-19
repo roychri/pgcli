@@ -267,6 +267,29 @@ def generate_sql(pgcli, user_input):
                     "additionalProperties": False
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_table_statistics",
+                "description": "Get statistics for a table in the current database.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "table_name": {
+                            "type": "string",
+                            "description": "The name of the table to get statistics for"
+                        },
+                        "schema": {
+                            "type": "string",
+                            "description": "The schema of the table (default is 'public')",
+                            "default": "public"
+                        }
+                    },
+                    "required": [ "table_name" ],
+                    "additionalProperties": False
+                }
+            }
         }
     ]
 
@@ -318,6 +341,10 @@ def generate_sql(pgcli, user_input):
                         enum_name = function_args["enum_name"]
                         schema = function_args.get('schema', 'public')
                         function_response = describe_enum(pgcli, enum_name, schema)
+                    elif function_name == "get_table_statistics":
+                        table_name = function_args["table_name"]
+                        schema = function_args.get('schema', 'public')
+                        function_response = get_table_statistics(pgcli, table_name, schema)
                     else:
                         function_response = json.dumps({"error": f"Function {function_name} not found"})
 
@@ -399,5 +426,27 @@ WHERE
      AND t.typname = '{enum_name}'
 ORDER BY
      e.enumsortorder;"""
+    )
+    return "\n".join(output)
+
+def get_table_statistics(pgcli, table_name, schema="public"):
+    print(f"...getting statistics for table {table_name} in {schema}...")
+    output, query = pgcli._evaluate_command(
+        f"""SELECT
+     pg_stat_user_tables.relname AS table_name,
+     pg_stat_user_tables.n_live_tup AS row_count,
+     pg_size_pretty(pg_total_relation_size('"' || schemaname || '"."' || relname || '"')) AS total_size,
+     pg_stat_user_tables.seq_scan AS sequential_scans,
+     pg_stat_user_tables.idx_scan AS index_scans,
+     pg_stat_user_tables.n_tup_ins AS inserts,
+     pg_stat_user_tables.n_tup_upd AS updates,
+     pg_stat_user_tables.n_tup_del AS deletes,
+     pg_stat_user_tables.last_vacuum,
+     pg_stat_user_tables.last_analyze
+FROM
+     pg_stat_user_tables
+WHERE
+     pg_stat_user_tables.schemaname = '{schema}'
+     AND pg_stat_user_tables.relname = '{table_name}';"""
     )
     return "\n".join(output)
