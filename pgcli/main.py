@@ -834,8 +834,13 @@ class PGCli:
             except Exception as e:
                 click.secho(f"Error communicating with LLM: {e}", fg="red")
             return
-        query = MetaQuery(query=text, successful=False)
 
+        if not self.is_llm_output:
+            # Let's keep track of the regular SQL queries from the user so the LLM
+            # can help the user fix any mistake the user makes and understand the context.
+            llm_append_output("user", text)
+
+            query = MetaQuery(query=text, successful=False)
         try:
             if self.destructive_warning:
                 if (
