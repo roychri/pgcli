@@ -185,6 +185,7 @@ class PGCli:
         warn=None,
         ssh_tunnel_url: Optional[str] = None,
         log_file: Optional[str] = None,
+        llm_log_dir: Optional[str] = None,
     ):
         self.force_passwd_prompt = force_passwd_prompt
         self.never_passwd_prompt = never_passwd_prompt
@@ -194,6 +195,7 @@ class PGCli:
         self.llm_mode = False
         self.is_llm_output = False
         self.llm_errors = 0
+        self.llm_log_dir = llm_log_dir
 
         # Load config.
         c = self.config = get_config(pgclirc_file)
@@ -1539,6 +1541,11 @@ class PGCli:
     default=None,
     help="Write all queries & output into a file, in addition to the normal output destination.",
 )
+@click.option(
+    "--llm-log-dir",
+    default=None,
+    help="Specify the directory for LLM interaction logs. Use 'disable' to turn off logging.",
+)
 @click.argument("dbname", default=lambda: None, envvar="PGDATABASE", nargs=1)
 @click.argument("username", default=lambda: None, envvar="PGUSER", nargs=1)
 def cli(
@@ -1566,6 +1573,7 @@ def cli(
     warn,
     ssh_tunnel: str,
     log_file: str,
+    llm_log_dir: str,
 ):
     if version:
         print("Version:", __version__)
@@ -1625,6 +1633,7 @@ def cli(
         warn=warn,
         ssh_tunnel_url=ssh_tunnel,
         log_file=log_file,
+        llm_log_dir=llm_log_dir,
     )
 
     # Choose which ever one has a valid value.
