@@ -28,10 +28,19 @@ messages = [
     {
         "role": "system",
         "content": """You are an assistant that generates SQL queries based on user requests.
-You have access to some functions like `get_tables` and `describe_tables` that you can call to gather vital and necessary information to create valid and working SQL queries like being able to retrieve the list of tables in the database.
+You have access to some functions like `get_tables` and `describe_tables` that you MUST call to gather vital and necessary information to create valid and working SQL queries like being able to retrieve the list of tables in the database.
+Functions:
+get_tables: List all the available tables. This will help you pick the right table(s).
+describe_tables: Get a full list of column names and data type for list of tables.
+describe_enum: returns the available anum values. This will help you making informed decision when working with enums. You MUST use this before working with any enum.
+get_table_statistics: This function could provide information about the size of tables, number of rows, and other statistics. This would help you make better decisions about query optimization.
+get_indexes: This function could return information about existing indexes on tables. This would help you understand how to optimize queries and suggest appropriate indexes.
+get_foreign_keys: This function could return information about foreign key relationships between tables. This would help you understand table relationships and construct better JOINs.
+get_constraints: This function could return information about constraints (e.g., unique, check constraints) on tables. This would help you understand data integrity rules.
 Use these functions ALL THE TIME to help guide you to provide accurate SQL queries, specially when working with a table you have not seen before.
 Make sure the SQL returns data in a human readable format and augmented with anything a user would benbefit from seeing. This include but is not limited to: timezone, extracting data from json/jsonb fields, concatening fields, etc...
 You only return SQL queries and nothing else.
+Required Steps: Gathering content, Exploring possibilities, Understanding the context, validating the assumptions. Use the functions to do all that. Like describing the enums before using them.
 No matter what, you need to return valid SQL, including comments (-- ...).
 If we ask the for the current time, return `select NOW()`.
 Do not return any blockquote. Do not return markdown. Just SQL.
@@ -261,7 +270,7 @@ def generate_sql(pgcli, user_input):
             "type": "function",
             "function": {
                 "name": "describe_enum",
-                "description": "Describe an enum in the current database.",
+                "description": "Describe an enum in the current database. You MUST use this before working with any num values.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -314,6 +323,52 @@ def generate_sql(pgcli, user_input):
                         "table_name": {
                             "type": "string",
                             "description": "The name of the table to get indexes for"
+                        },
+                        "schema": {
+                            "type": "string",
+                            "description": "The schema of the table (default is 'public')",
+                            "default": "public"
+                        }
+                    },
+                    "required": [ "table_name" ],
+                    "additionalProperties": False
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_constraints",
+                "description": "Get constraints for a table in the current database.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "table_name": {
+                            "type": "string",
+                            "description": "The name of the table to get constraints for"
+                        },
+                        "schema": {
+                            "type": "string",
+                            "description": "The schema of the table (default is 'public')",
+                            "default": "public"
+                        }
+                    },
+                    "required": [ "table_name" ],
+                    "additionalProperties": False
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_foreign_keys",
+                "description": "Get foreign keys for a table in the current database.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "table_name": {
+                            "type": "string",
+                            "description": "The name of the table to get foreign keys for"
                         },
                         "schema": {
                             "type": "string",
@@ -510,5 +565,45 @@ WHERE
      AND i.relam = am.oid
 ORDER BY
      i.relname;"""
+    )
+    return "\n".join(output)
+
+@with_default_args
+def get_constraints(pgcli, table_name, schema="public"):
+    print(f"...getting constraints for table {table_name} in {schema}...")
+    output, query = pgcli._evaluate_command(
+        f"""SELECT
+     con.conname AS constraint_name,
+     con.contype AS constraint_type,
+     pg_get_constraintdef(con.oid) AS constraint_definition
+FROM
+     pg_constraint con
+JOIN
+     pg_class rel ON rel.oid = con.conrelid
+JOIN
+     pg_namespace nsp ON nsp.oid = rel.relnamespace
+WHERE
+     rel.relname = '{table_name}'
+     AND nsp.nspname = '{schema}';"""
+    )
+    return "\n".join(output)
+
+@with_default_args
+def get_foreign_keys(pgcli, table_name, schema="public"):
+    print(f"...getting foreign keys for table {table_name} in {schema}...")
+    output, query = pgcli._evaluate_command(
+        f"""SELECT
+     con.conname AS constraint_name,
+     pg_get_constraintdef(con.oid) AS constraint_definition
+FROM
+     pg_constraint con
+JOIN
+     pg_class rel ON rel.oid = con.conrelid
+JOIN
+     pg_namespace nsp ON nsp.oid = rel.relnamespace
+WHERE
+     con.contype = 'f'
+     AND rel.relname = '{table_name}'
+     AND nsp.nspname = '{schema}';"""
     )
     return "\n".join(output)
