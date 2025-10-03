@@ -12,7 +12,7 @@ class CompletionRefresher:
         self._completer_thread = None
         self._restart_refresh = threading.Event()
 
-    def refresh(self, executor, special, callbacks, history=None, settings=None):
+    def refresh(self, executor, special, callbacks, history=None, settings=None, llm_mode_callback=None):
         """
         Creates a PGCompleter object and populates it with the relevant
         completion suggestions in a background thread.
@@ -24,6 +24,7 @@ class CompletionRefresher:
         callbacks - A function or a list of functions to call after the thread
                     has completed the refresh. The newly created completion
                     object will be passed in as an argument to each callback.
+        llm_mode_callback - Callback function to check if LLM mode is active
         """
         if executor.is_virtual_database():
             # do nothing
@@ -35,7 +36,7 @@ class CompletionRefresher:
         else:
             self._completer_thread = threading.Thread(
                 target=self._bg_refresh,
-                args=(executor, special, callbacks, history, settings),
+                args=(executor, special, callbacks, history, settings, llm_mode_callback),
                 name="completion_refresh",
             )
             self._completer_thread.daemon = True
@@ -45,9 +46,11 @@ class CompletionRefresher:
     def is_refreshing(self):
         return self._completer_thread and self._completer_thread.is_alive()
 
-    def _bg_refresh(self, pgexecute, special, callbacks, history=None, settings=None):
+    def _bg_refresh(self, pgexecute, special, callbacks, history=None, settings=None, llm_mode_callback=None):
         settings = settings or {}
-        completer = PGCompleter(smart_completion=True, pgspecial=special, settings=settings)
+        completer = PGCompleter(
+            smart_completion=True, pgspecial=special, settings=settings, llm_mode_callback=llm_mode_callback
+        )
 
         if settings.get("single_connection"):
             executor = pgexecute

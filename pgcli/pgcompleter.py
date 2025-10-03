@@ -102,11 +102,12 @@ class PGCompleter(Completer):
     datatypes = get_literals("datatypes")
     reserved_words = set(get_literals("reserved"))
 
-    def __init__(self, smart_completion=True, pgspecial=None, settings=None):
+    def __init__(self, smart_completion=True, pgspecial=None, settings=None, llm_mode_callback=None):
         super().__init__()
         self.smart_completion = smart_completion
         self.pgspecial = pgspecial
         self.prioritizer = PrevalenceCounter()
+        self.llm_mode_callback = llm_mode_callback or (lambda: False)
         settings = settings or {}
         self.signature_arg_style = settings.get("signature_arg_style", "{arg_name} {arg_type}")
         self.call_arg_style = settings.get("call_arg_style", "{arg_name: <{max_arg_len}} := {arg_default}")
@@ -470,16 +471,48 @@ class PGCompleter(Completer):
         # If smart_completion is off then match any word that starts with
         # 'word_before_cursor'.
         if not smart_completion:
-            matches = self.find_matches(word_before_cursor, self.all_completions, mode="strict")
+            # In LLM mode, don't suggest keywords/functions (only schema objects from metadata)
+            llm_mode = self.llm_mode_callback()
+            if llm_mode:
+                # Build completions from database metadata only (no SQL keywords/functions)
+                schema_completions = set()
+                # Add table names
+                for schema in self.dbmetadata.get('tables', {}).values():
+                    schema_completions.update(schema.keys())
+                # Add view names
+                for schema in self.dbmetadata.get('views', {}).values():
+                    schema_completions.update(schema.keys())
+                # Add database names
+                schema_completions.update(self.databases)
+
+                matches = self.find_matches(
+                    word_before_cursor, schema_completions, mode="strict"
+                )
+            else:
+                matches = self.find_matches(
+                    word_before_cursor, self.all_completions, mode="strict"
+                )
             completions = [m.completion for m in matches]
             return sorted(completions, key=operator.attrgetter("text"))
 
         matches = []
         suggestions = suggest_type(document.text, document.text_before_cursor)
 
+        # In LLM mode, only allow schema object completions (tables, columns, etc.)
+        # Exclude SQL keywords, functions, and other SQL-specific completions
+        llm_mode = self.llm_mode_callback()
+
+        _logger.debug("LLM mode check: llm_mode=%s, suggestions=%s", llm_mode, [type(s).__name__ for s in suggestions])
+        allowed_in_llm_mode = {Column, Schema, Table, View, Database}
+
         for suggestion in suggestions:
             suggestion_type = type(suggestion)
             _logger.debug("Suggestion type: %r", suggestion_type)
+
+            # Skip SQL-specific completions in LLM mode (keywords, functions, etc.)
+            if llm_mode and suggestion_type not in allowed_in_llm_mode:
+                _logger.debug("Skipping suggestion type %r in LLM mode", suggestion_type)
+                continue
 
             # Map suggestion type to method
             # e.g. 'table' -> self.get_table_matches

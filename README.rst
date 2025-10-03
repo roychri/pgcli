@@ -49,6 +49,15 @@ If you already know how to install python packages, then you can simply do:
     $ sudo apt-get install pgcli # Only on Debian based Linux (e.g. Ubuntu, Mint, etc)
     $ brew install pgcli  # Only on macOS
 
+**For LLM Mode (Natural Language SQL Generation):**
+
+::
+
+    $ pip install -U "pgcli[llm]"
+
+This installs additional dependencies for LLM support (pydantic-ai, tiktoken).
+See `docs/LLM_SETUP.md`_ for provider setup.
+
 If you don't know how to install python packages, please check the
 `detailed instructions`_.
 
@@ -137,11 +146,21 @@ The `pgcli` is written using prompt_toolkit_.
     - ``SELECT * FROM <tab>`` will only show table names.
     - ``SELECT * FROM users WHERE <tab>`` will only show column names.
 
+* **NEW: LLM Mode (F6)** - Natural language to SQL generation
+
+    - Generate SQL from plain English queries
+    - Multi-provider support (Anthropic Claude, OpenAI GPT, Ollama)
+    - Conversation history with automatic context management
+    - Smart token-aware trimming for large results
+    - See `docs/LLM_SETUP.md`_ and `docs/LLM_USAGE.md`_ for details
+
 * Primitive support for ``psql`` back-slash commands.
 * Pretty prints tabular data.
 
 .. _prompt_toolkit: https://github.com/jonathanslenders/python-prompt-toolkit
 .. _tabulate: https://pypi.python.org/pypi/tabulate
+.. _docs/LLM_SETUP.md: https://github.com/dbcli/pgcli/blob/main/docs/LLM_SETUP.md
+.. _docs/LLM_USAGE.md: https://github.com/dbcli/pgcli/blob/main/docs/LLM_USAGE.md
 
 Config
 ------

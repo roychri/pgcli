@@ -75,3 +75,4 @@ venv/
 uv.lock
 
 .aider*
+.env
