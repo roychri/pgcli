@@ -3,6 +3,7 @@ from typing import List
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
 from .models import PgcliDeps
+import psycopg.sql
 import sys
 
 
@@ -12,6 +13,20 @@ def _show_tool_status(message: str):
     sys.stdout.write("\r\033[K")  # \r = return to start, \033[K = clear to end
     sys.stdout.write(message)
     sys.stdout.flush()
+
+
+def _query_to_string(query_obj: psycopg.sql.Composable, pgcli) -> str:
+    """Convert a psycopg.sql query object to string.
+
+    Handles both production (with real connection) and test (with mock connection) scenarios.
+    """
+    try:
+        # Try to use the real connection for proper quoting
+        return query_obj.as_string(pgcli.pgexecute.conn)
+    except (AttributeError, TypeError):
+        # Fallback for tests with mock connections
+        # This provides basic string conversion without full connection infrastructure
+        return query_obj.as_string()
 
 
 class DescribeTablesInput(BaseModel):
@@ -84,12 +99,17 @@ def describe_tables(ctx: RunContext[PgcliDeps], params: DescribeTablesInput) -> 
     Returns column names, data types, and descriptions for the requested tables.
     This helps the LLM understand table structure for query generation.
     """
-    table_names_joined = "'" + "', '".join(params.table_names) + "'"
-    _show_tool_status(f"...describing tables {table_names_joined} in {params.schema_name}...")
+    table_names_display = "'" + "', '".join(params.table_names) + "'"
+    _show_tool_status(f"...describing tables {table_names_display} in {params.schema_name}...")
 
     pgcli = ctx.deps.pgcli
-    output, query = pgcli._evaluate_command(
-        f"""SELECT
+
+    # Build table names list safely using psycopg.sql.Literal
+    table_literals = [psycopg.sql.Literal(name) for name in params.table_names]
+    table_list = psycopg.sql.SQL(', ').join(table_literals)
+
+    # Construct query with safe parameter substitution
+    query_obj = psycopg.sql.SQL("""SELECT
      cols.column_name,
      cols.data_type,
      pgd.description
@@ -102,9 +122,14 @@ LEFT JOIN
      pg_catalog.pg_description AS pgd
      ON pgd.objoid = st.relid AND pgd.objsubid = cols.ordinal_position
 WHERE
-     cols.table_schema = '{params.schema_name}'
-     AND cols.table_name in ({table_names_joined});"""
+     cols.table_schema = {schema}
+     AND cols.table_name in ({tables});""").format(
+        schema=psycopg.sql.Literal(params.schema_name),
+        tables=table_list
     )
+
+    query_string = _query_to_string(query_obj, pgcli)
+    output, query = pgcli._evaluate_command(query_string)
     return "\n".join(output)
 
 
@@ -117,8 +142,9 @@ def describe_enum(ctx: RunContext[PgcliDeps], params: DescribeEnumInput) -> str:
     """
     _show_tool_status(f"...describing enum {params.enum_name} in {params.schema_name}...")
     pgcli = ctx.deps.pgcli
-    output, query = pgcli._evaluate_command(
-        f"""SELECT
+
+    # Construct query with safe parameter substitution
+    query_obj = psycopg.sql.SQL("""SELECT
      e.enumlabel AS enum_value,
      e.enumsortorder AS sort_order
 FROM
@@ -129,11 +155,16 @@ JOIN
      pg_catalog.pg_namespace n ON n.oid = t.typnamespace
 WHERE
      t.typtype = 'e'
-     AND n.nspname = '{params.schema_name}'
-     AND t.typname = '{params.enum_name}'
+     AND n.nspname = {schema}
+     AND t.typname = {enum_name}
 ORDER BY
-     e.enumsortorder;"""
+     e.enumsortorder;""").format(
+        schema=psycopg.sql.Literal(params.schema_name),
+        enum_name=psycopg.sql.Literal(params.enum_name)
     )
+
+    query_string = _query_to_string(query_obj, pgcli)
+    output, query = pgcli._evaluate_command(query_string)
     return "\n".join(output)
 
 
@@ -146,8 +177,9 @@ def get_table_statistics(ctx: RunContext[PgcliDeps], params: GetTableStatsInput)
     """
     _show_tool_status(f"...getting statistics for table {params.table_name} in {params.schema_name}...")
     pgcli = ctx.deps.pgcli
-    output, query = pgcli._evaluate_command(
-        f"""SELECT
+
+    # Construct query with safe parameter substitution
+    query_obj = psycopg.sql.SQL("""SELECT
      pg_stat_user_tables.relname AS table_name,
      pg_stat_user_tables.n_live_tup AS row_count,
      pg_size_pretty(pg_total_relation_size('"' || schemaname || '"."' || relname || '"')) AS total_size,
@@ -161,9 +193,14 @@ def get_table_statistics(ctx: RunContext[PgcliDeps], params: GetTableStatsInput)
 FROM
      pg_stat_user_tables
 WHERE
-     pg_stat_user_tables.schemaname = '{params.schema_name}'
-     AND pg_stat_user_tables.relname = '{params.table_name}';"""
+     pg_stat_user_tables.schemaname = {schema}
+     AND pg_stat_user_tables.relname = {table_name};""").format(
+        schema=psycopg.sql.Literal(params.schema_name),
+        table_name=psycopg.sql.Literal(params.table_name)
     )
+
+    query_string = _query_to_string(query_obj, pgcli)
+    output, query = pgcli._evaluate_command(query_string)
     return "\n".join(output)
 
 
@@ -176,8 +213,9 @@ def get_indexes(ctx: RunContext[PgcliDeps], params: GetIndexesInput) -> str:
     """
     _show_tool_status(f"...getting indexes for table {params.table_name} in {params.schema_name}...")
     pgcli = ctx.deps.pgcli
-    output, query = pgcli._evaluate_command(
-        f"""SELECT
+
+    # Construct query with safe parameter substitution
+    query_obj = psycopg.sql.SQL("""SELECT
      i.relname AS index_name,
      a.attname AS column_name,
      ix.indisunique AS is_unique,
@@ -196,12 +234,17 @@ WHERE
      AND a.attrelid = t.oid
      AND a.attnum = ANY(ix.indkey)
      AND t.relkind = 'r'
-     AND t.relname = '{params.table_name}'
-     AND t.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = '{params.schema_name}')
+     AND t.relname = {table_name}
+     AND t.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = {schema})
      AND i.relam = am.oid
 ORDER BY
-     i.relname;"""
+     i.relname;""").format(
+        table_name=psycopg.sql.Literal(params.table_name),
+        schema=psycopg.sql.Literal(params.schema_name)
     )
+
+    query_string = _query_to_string(query_obj, pgcli)
+    output, query = pgcli._evaluate_command(query_string)
     return "\n".join(output)
 
 
@@ -214,8 +257,9 @@ def get_constraints(ctx: RunContext[PgcliDeps], params: GetConstraintsInput) -> 
     """
     _show_tool_status(f"...getting constraints for table {params.table_name} in {params.schema_name}...")
     pgcli = ctx.deps.pgcli
-    output, query = pgcli._evaluate_command(
-        f"""SELECT
+
+    # Construct query with safe parameter substitution
+    query_obj = psycopg.sql.SQL("""SELECT
      con.conname AS constraint_name,
      con.contype AS constraint_type,
      pg_get_constraintdef(con.oid) AS constraint_definition
@@ -226,9 +270,14 @@ JOIN
 JOIN
      pg_namespace nsp ON nsp.oid = rel.relnamespace
 WHERE
-     rel.relname = '{params.table_name}'
-     AND nsp.nspname = '{params.schema_name}';"""
+     rel.relname = {table_name}
+     AND nsp.nspname = {schema};""").format(
+        table_name=psycopg.sql.Literal(params.table_name),
+        schema=psycopg.sql.Literal(params.schema_name)
     )
+
+    query_string = _query_to_string(query_obj, pgcli)
+    output, query = pgcli._evaluate_command(query_string)
     return "\n".join(output)
 
 
@@ -241,8 +290,9 @@ def get_foreign_keys(ctx: RunContext[PgcliDeps], params: GetForeignKeysInput) ->
     """
     _show_tool_status(f"...getting foreign keys for table {params.table_name} in {params.schema_name}...")
     pgcli = ctx.deps.pgcli
-    output, query = pgcli._evaluate_command(
-        f"""SELECT
+
+    # Construct query with safe parameter substitution
+    query_obj = psycopg.sql.SQL("""SELECT
      con.conname AS constraint_name,
      pg_get_constraintdef(con.oid) AS constraint_definition
 FROM
@@ -253,7 +303,12 @@ JOIN
      pg_namespace nsp ON nsp.oid = rel.relnamespace
 WHERE
      con.contype = 'f'
-     AND rel.relname = '{params.table_name}'
-     AND nsp.nspname = '{params.schema_name}';"""
+     AND rel.relname = {table_name}
+     AND nsp.nspname = {schema};""").format(
+        table_name=psycopg.sql.Literal(params.table_name),
+        schema=psycopg.sql.Literal(params.schema_name)
     )
+
+    query_string = _query_to_string(query_obj, pgcli)
+    output, query = pgcli._evaluate_command(query_string)
     return "\n".join(output)

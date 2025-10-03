@@ -132,9 +132,16 @@ class TestGenerateSQLFunction:
         from pgcli.llm import generate_sql
         from pgcli.llm.config import LLMConfig
 
-        # Create mock pgcli
+        # Create mock pgcli with proper connection structure
         mock_pgcli = Mock()
         mock_pgcli._evaluate_command.return_value = (["public | test | Test table"], "SELECT ...")
+
+        # Create a proper mock connection for psycopg.sql.as_string()
+        mock_conn = Mock()
+        mock_conn.connection.pgconn._encoding = 'utf8'
+        mock_pgexecute = Mock()
+        mock_pgexecute.conn = mock_conn
+        mock_pgcli.pgexecute = mock_pgexecute
 
         # Create config with TestModel
         config = LLMConfig(provider="anthropic", api_key="test-key")
@@ -190,6 +197,13 @@ class TestMessageHistoryTracking:
 
         # Create mock pgcli with _evaluate_command
         cli._evaluate_command = Mock(return_value=(["public | test | Test table"], "SELECT ..."))
+
+        # Create a proper mock connection for psycopg.sql.as_string()
+        mock_conn = Mock()
+        mock_conn.connection.pgconn._encoding = 'utf8'
+        mock_pgexecute = Mock()
+        mock_pgexecute.conn = mock_conn
+        cli.pgexecute = mock_pgexecute
 
         # Create agent with TestModel
         agent = create_agent(model=TestModel())
@@ -655,6 +669,16 @@ class TestToolsWithMockPgcli:
     def mock_pgcli(self):
         """Create a mock pgcli instance that returns test data."""
         mock = Mock()
+
+        # Create a proper mock connection for psycopg.sql.as_string()
+        mock_conn = Mock()
+        mock_conn.connection.pgconn._encoding = 'utf8'
+
+        # Create mock pgexecute with conn
+        mock_pgexecute = Mock()
+        mock_pgexecute.conn = mock_conn
+
+        mock.pgexecute = mock_pgexecute
 
         def mock_evaluate(query):
             """Mock _evaluate_command with different responses based on query."""
