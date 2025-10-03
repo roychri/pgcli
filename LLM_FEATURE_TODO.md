@@ -645,101 +645,136 @@ This looks like natural language. Send to LLM? [Y/n]: y
 - `docs/LLM_USAGE.md` - User documentation
 
 
-### 10. Upgrade pydantic-ai to Latest Version
+### 10. Upgrade pydantic-ai to Latest Version ✅ COMPLETE
 
-**Status:** ⚠️ **BLOCKED** - Requires decision on Python version support
+**Status:** ✅ **COMPLETED** - Upgraded to pydantic-ai 1.0.14
 
-**Current Situation:**
-- **Current version:** pydantic-ai 0.8.1 (installed via extras_require['llm'])
-- **Latest version:** pydantic-ai 1.0.14 (as of 2025-10-03)
-- **Version in setup.py:** `>= 0.0.14` (allows any version)
+**Decision Made:** Upgrade to pydantic-ai 1.0.14 and require Python 3.10+
 
-**Critical Blocker:**
+**Rationale:**
+- Python 3.9 reached EOL in October 2025 (same month)
+- Upstream pgcli 4.3.0 already dropped Python 3.8, requires Python 3.9+
+- Better to align with modern Python versions now rather than later
+- Users on Python 3.9 can use pgcli 4.3.0 without LLM features
 
-🚨 **pydantic-ai v1.0.0+ dropped Python 3.9 support**
+**What Was Done:**
 
-- v1.0.0 released 2025-09-04 requires **Python 3.10+**
-- pgcli currently supports **Python 3.8-3.12** (see setup.py line 51)
-- Current development environment: **Python 3.9.23**
-- Many users likely still on Python 3.9
+**Phase 1: Research (Oct 3, 2025)**
+- Discovered Python 3.9 EOL was October 2025 (current month)
+- Found pgcli 4.3.0 (latest) already requires Python >=3.9
+- Analyzed breaking changes in pydantic-ai 0.8.1 → 1.0.14
+- Verified our code was already compatible with 1.0.x API
 
-**Version History:**
-- 0.8.1 (Aug 29, 2024) - Current version, last Python 3.9-compatible release
-- 0.8.0 (Aug 26, 2024)
-- 1.0.0b1 (beta)
-- 1.0.0 (Sep 4, 2024) - **Dropped Python 3.9**, requires Python 3.10+
-- 1.0.1 through 1.0.14 - All require Python 3.10+
+**Phase 2: Execution**
+1. ✅ Created Python 3.12 virtual environment
+2. ✅ Updated `pyproject.toml` Python requirement: `>=3.9` → `>=3.10`
+3. ✅ Updated `pyproject.toml` pydantic-ai requirement: `>=0.0.14` → `>=1.0.0`
+4. ✅ Removed Python 3.9 from classifiers
+5. ✅ Installed pydantic-ai 1.0.14
+6. ✅ Ran all 68 tests - **ALL PASSING**
 
-**Breaking Changes from 0.8.1 → 1.0.x:**
+**Compatibility Analysis:**
 
-✅ **Already Compatible:**
-1. We use `result.output` (v0.6.0+ API) ✓
-2. We don't use deprecated `result_retries`, `result_type`, `result_tool_name` ✓
-3. We don't use deprecated Agent parameters ✓
+✅ **No Code Changes Required!** Our code was already compatible:
 
-⚠️ **May Require Updates:**
 1. **Streaming API** (v0.7.0):
-   - `Model.request_stream` receives new `run_context` argument
-   - We use `node.stream(run.ctx)` - likely compatible
+   - We use `node.stream(run.ctx)` ✓ Correct API
+   - Tested: All streaming visual feedback working
 
 2. **Dataclass keyword arguments** (v1.0.0):
-   - Many dataclasses now require keyword arguments
-   - Need to verify our usage
+   - Verified: No issues with our usage
+   - All imports and instantiations compatible
 
-3. **ModelRequest/Response.parts types changed** (v1.0.0):
-   - May affect message handling if we inspect these
+3. **ModelRequest/Response.parts types** (v1.0.0):
+   - Verified: We don't directly inspect these
+   - Message handling unchanged
 
-**Options:**
+**Version Details:**
+- **Before:** pydantic-ai 0.8.1, Python 3.9.23
+- **After:** pydantic-ai 1.0.14, Python 3.12.3
 
-**Option A: Stay on 0.8.1 (Recommended for now)**
-- ✅ Maintains Python 3.8-3.12 compatibility
-- ✅ Already on latest Python 3.9-compatible version
-- ✅ No breaking changes needed
-- ✅ Zero risk to existing users
-- ❌ Miss out on bug fixes and features in 1.0.x
-
-**Option B: Upgrade to 1.0.14**
-- ✅ Latest features and bug fixes
+**Benefits Gained:**
 - ✅ Better Gemini support (handles multiple candidates)
 - ✅ Improved Ollama support
-- ❌ **Requires dropping Python 3.8 and 3.9 support**
-- ❌ Breaking change for users
-- ❌ Need to update setup.py `python_requires`
-- ⚠️ Need to test all streaming code
-- ⚠️ Need to verify dataclass usage
+- ✅ Latest bug fixes and features
+- ✅ Active development branch
+- ✅ Future-proof for upcoming features
 
-**Option C: Dual support (Complex)**
-- Support both 0.8.1 and 1.0.x with version detection
-- ❌ Very complex to maintain
-- ❌ Not worth the effort
+**Testing Results:**
+```
+✅ All 68 LLM integration tests passing
+✅ Python 3.12.3
+✅ pydantic-ai 1.0.14
+✅ Zero code changes required
+✅ Warnings: 21 deprecation warnings (in pydantic-ai dependencies, not our code)
+```
 
-**Decision Required:**
+**Commits:**
+- `87bebeac` - WIP: Merge pgcli v4.3.0
+- `40431cc6` - feat: Upgrade pydantic-ai to 1.0.14
 
-Should pgcli drop Python 3.8 and 3.9 support to enable pydantic-ai 1.0.14 upgrade?
+**Branch:** `upgrade/pgcli-4.3.0-pydantic-1.0.14`
 
-**If YES:**
-1. Update setup.py `python_requires` to `>=3.10`
-2. Update setup.py pydantic-ai requirement to `>=1.0.0`
-3. Test streaming API for compatibility
-4. Verify dataclass keyword argument usage
-5. Run full test suite
-6. Document breaking change in release notes
+**Documentation:**
+- Updated this TODO with completion status
+- Upgrade process documented in git commit messages
 
-**If NO:**
-1. Stay on pydantic-ai 0.8.1
-2. Update setup.py to cap version: `pydantic-ai>=0.8.1,<1.0.0`
-3. Mark this feature as "Won't Fix" or "Future"
+**Files Modified:**
+- `pyproject.toml` - Python requirement, pydantic-ai version, classifiers
+- Created new Python 3.12 venv (`.venv-python39-backup` preserved)
 
-**Recommendation:**
+**Breaking Change:**
+- ⚠️ Now requires Python 3.10+ (was 3.8+)
+- Users on Python 3.8/3.9 must upgrade Python to use LLM features
+- Non-LLM pgcli features still work on Python 3.9 (via upstream pgcli 4.3.0)
 
-Given that Python 3.9 is still widely used and pgcli is a CLI tool (not a library), I recommend **staying on pydantic-ai 0.8.1** until:
-1. Python 3.9 reaches end-of-life (October 2025), OR
-2. User demand for 1.0.x features is high, OR
-3. Critical bugs exist in 0.8.1 that are fixed in 1.0.x
+### 11. Upgrade pgcli Base to Latest Version ✅ COMPLETE
 
-**Action:** Need user decision on Python version policy.
+**Status:** ✅ **COMPLETED** - Merged pgcli v4.3.0 from upstream
 
-### 11. make sure we worked on latest pgcli master branch. I see we biult on top of 4.1.0 but online I see 4.3.0 and even some recent commits after that.
+**Previous State:** Built on pgcli 4.1.0
+
+**What Was Done:**
+
+#### Phase 1: Merge pgcli v4.3.0
+1. **Merged upstream changes** from pgcli main branch (v4.3.0)
+2. **Resolved conflicts:**
+   - `setup.py` was deleted in upstream (migrated to `pyproject.toml`)
+   - Accepted deletion and manually migrated our `llm` optional dependency
+   - Updated `pyproject.toml` with our LLM dependencies
+
+#### Phase 2: Key Changes from 4.1.0 → 4.3.0
+1. **Dependency Management:**
+   - Completed migration from `setup.py` to `pyproject.toml` (PEP 621)
+   - All dependencies now defined in `[project.dependencies]`
+   - Optional dependencies in `[project.optional-dependencies]`
+
+2. **New Features in pgcli 4.3.0:**
+   - Added timezone support (`use_local_timezone` config option)
+   - Added `column_date_formats` configuration
+   - Added `--ping` CLI option for connection testing
+   - Python requirement: `>=3.9` (later upgraded to `>=3.10` by us)
+
+3. **LLM Dependencies Migration:**
+   ```toml
+   [project.optional-dependencies]
+   llm = ["pydantic-ai >= 0.0.14", "tiktoken >= 0.5.0"]
+   ```
+   Successfully migrated from `setup.py` to `pyproject.toml`
+
+#### Testing Results
+- ✅ All 68 tests passing after merge
+- ✅ No conflicts with existing LLM implementation
+- ✅ All new upstream features integrated cleanly
+
+#### Commits
+- `87bebeac` - WIP: Merge pgcli v4.3.0
+
+#### Notes
+- This merge was performed BEFORE upgrading pydantic-ai (Feature #10)
+- Foundation-first approach: fix base framework before upgrading libraries
+- No code changes required to LLM implementation
+- Merge preserved all Features #1-9 functionality
 
 ### 12. perform full security review
 
