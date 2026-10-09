@@ -2,6 +2,7 @@ from zoneinfo import ZoneInfoNotFoundError
 from configobj import ConfigObj, ParseError
 from pgspecial.namedqueries import NamedQueries
 from .config import skip_initial_comment
+from .llm import generate_sql, add_sql_result_to_history
 
 import atexit
 import os
@@ -41,7 +42,7 @@ from prompt_toolkit.shortcuts import PromptSession, CompleteStyle
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import HasFocus, IsDone
 from prompt_toolkit.formatted_text import ANSI
-from prompt_toolkit.lexers import PygmentsLexer
+from prompt_toolkit.lexers import PygmentsLexer, Lexer
 from prompt_toolkit.layout.processors import (
     ConditionalProcessor,
     HighlightMatchingBracketProcessor,
@@ -51,6 +52,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.cursor_shapes import ModalCursorShapeConfig
 from pygments.lexers.sql import PostgresLexer
+from pygments.lexers.special import TextLexer
 
 from pgspecial.main import PGSpecial, NO_QUERY, PAGER_OFF, PAGER_LONG_OUTPUT
 import pgspecial as special
@@ -188,6 +190,31 @@ def get_connect_timeout(explicit, dsn, kwargs, default):
     return default
 
 
+class ConditionalLexer(Lexer):
+    """A lexer that switches between SQL and plain text based on LLM mode.
+
+    When LLM mode is OFF: Use PostgresLexer (SQL syntax highlighting)
+    When LLM mode is ON: Use TextLexer (no syntax highlighting for natural language)
+    """
+
+    def __init__(self, get_llm_mode):
+        """
+        :param get_llm_mode: Callable that returns True if LLM mode is enabled
+        """
+        self.get_llm_mode = get_llm_mode
+        self.sql_lexer = PygmentsLexer(PostgresLexer)
+        self.text_lexer = PygmentsLexer(TextLexer)
+
+    def lex_document(self, document):
+        """Return the tokens for the given document."""
+        if self.get_llm_mode():
+            # LLM mode: plain text (no syntax highlighting)
+            return self.text_lexer.lex_document(document)
+        else:
+            # Normal mode: SQL syntax highlighting
+            return self.sql_lexer.lex_document(document)
+
+
 class PGCli:
     default_prompt = "\\u@\\h:\\d> "
     max_len_prompt = 30
@@ -232,6 +259,7 @@ class PGCli:
         connect_timeout: int | None = None,
         log_file: str | None = None,
         force_destructive: bool = False,
+        llm_log_dir: str | None = None,
     ):
         self.force_passwd_prompt = force_passwd_prompt
         self.never_passwd_prompt = never_passwd_prompt
@@ -239,6 +267,11 @@ class PGCli:
         self.dsn_alias = None
         self.watch_command = None
         self.force_destructive = force_destructive
+        self.llm_mode = False
+        self.is_llm_output = False
+        self.llm_errors = 0
+        self.llm_log_dir = llm_log_dir
+        self.llm_message_history = []  # Track conversation history for Pydantic AI
 
         # Load config.
         c = self.config = get_config(pgclirc_file)
@@ -344,7 +377,12 @@ class PGCli:
             "alias_map_file": c["main"]["alias_map_file"] or None,
         }
 
-        completer = PGCompleter(smart_completion, pgspecial=self.pgspecial, settings=self.settings)
+        completer = PGCompleter(
+            smart_completion,
+            pgspecial=self.pgspecial,
+            settings=self.settings,
+            llm_mode_callback=lambda: self.llm_mode
+        )
         self.completer = completer
         self._completer_lock = threading.Lock()
         self.register_special_commands()
@@ -908,11 +946,201 @@ class PGCli:
             editor_command = special.editor_command(text)
         return text
 
+    def generate_sql_with_llm(self, user_input):
+        response = generate_sql(self, user_input)
+        return response
+
     def execute_command(self, text, handle_closed_connection=True):
         logger = self.logger
 
-        query = MetaQuery(query=text, successful=False)
+        if self.llm_mode:
+            # LLM mode with retry mechanism on SQL errors
+            max_retries = 3
+            retry_count = 0
+            original_text = text  # Save original user input for retry prompts
 
+            while retry_count < max_retries:
+                try:
+                    # Generate SQL from natural language (or retry with error context)
+                    sql_query = self.generate_sql_with_llm(text)
+                    if not sql_query:
+                        click.secho("LLM did not return a SQL query.", fg="yellow")
+                        return
+
+                    # Execute the generated SQL query
+                    self.is_llm_output = True
+                    print(f"> {sql_query}")
+
+                    # Safety check: Reject COPY TO STDOUT/FROM STDIN (breaks connection protocol)
+                    # Note: COPY to file paths is fine, only STDOUT/STDIN are problematic
+                    sql_upper = sql_query.upper()
+                    if "COPY" in sql_upper:
+                        if "TO STDOUT" in sql_upper or "FROM STDIN" in sql_upper:
+                            retry_count += 1
+                            self.llm_errors += 1
+
+                            error_msg = """COPY TO STDOUT/FROM STDIN breaks the database connection.
+
+FORBIDDEN: Do NOT use COPY TO STDOUT or COPY FROM STDIN
+
+Instead, use one of these safe alternatives:
+1. \\copy (SELECT ...) TO '/tmp/file.csv' CSV HEADER  (client-side, no superuser needed)
+2. COPY (SELECT ...) TO '/tmp/file.csv' WITH CSV HEADER  (server-side, to file path)
+
+Generate valid SQL using one of these alternatives."""
+
+                            click.secho(f"Error (attempt {retry_count}/{max_retries}): {error_msg}", fg="red")
+
+                            if retry_count >= max_retries:
+                                click.secho(f"Too Many Errors from LLM ({max_retries} attempts)", err=True, fg="red")
+                                self.is_llm_output = False
+                                return
+
+                            # Add error to LLM history so it learns
+                            add_sql_result_to_history(self, sql_query, f"SQL Error: {error_msg}")
+
+                            # Update prompt for retry
+                            text = f"The previous query used COPY TO STDOUT which is forbidden.\n\n{error_msg}\n\nPlease generate ONLY valid SQL (no explanatory text) using \\copy or COPY to a file path to answer: {original_text}"
+
+                            # Retry with error context
+                            continue
+
+                    # Check for destructive queries and prompt for confirmation
+                    if self.destructive_warning:
+                        if (
+                            self.destructive_statements_require_transaction
+                            and not self.pgexecute.valid_transaction()
+                            and is_destructive(sql_query, self.destructive_warning)
+                        ):
+                            click.secho(
+                                "Destructive statements must be run within a transaction."
+                            )
+                            self.is_llm_output = False
+                            return
+
+                        destroy = confirm_destructive_query(
+                            sql_query, self.destructive_warning, self.dsn_alias
+                        )
+                        if destroy is False:
+                            click.secho("Wise choice! Query cancelled.")
+
+                            # Add rejection to LLM history so it knows the query was denied
+                            rejection_message = f"""SQL Query REJECTED by User:
+{sql_query}
+
+Reason: User cancelled destructive operation
+Status: Not executed
+
+The user reviewed this query and chose not to proceed. Consider suggesting safer alternatives or asking for clarification before generating destructive queries."""
+                            add_sql_result_to_history(self, sql_query, rejection_message)
+
+                            self.is_llm_output = False
+                            return
+                        elif destroy:
+                            click.secho("Your call!")
+
+                    # Execute SQL and capture output (_evaluate_command doesn't raise on SQL errors!)
+                    output, query = self._evaluate_command(sql_query)
+
+                    # Check if SQL execution was successful
+                    if query.successful:
+                        # Success! Add result to LLM history for context
+                        if output:
+                            result_text = "\n".join(output)
+
+                            # Parse EXPLAIN output if explain_mode is on
+                            explain_summary = None
+                            if self.explain_mode:
+                                from pgcli.llm.agent import parse_explain_output
+                                explain_summary = parse_explain_output(result_text)
+
+                            add_sql_result_to_history(
+                                self,
+                                sql_query,
+                                result_text,
+                                execution_time=query.execution_time,
+                                total_time=query.total_time,
+                                explain_output=explain_summary,
+                            )
+                            self.llm_errors = 0
+
+                            # Add the successful SQL to readline history for reuse (↑ arrow)
+                            if self.prompt_app and self.prompt_app.history:
+                                # Format: -- LLM: [original natural language query]
+                                #         [SQL query]
+                                history_entry = f"-- LLM: {original_text}\n{sql_query}"
+                                self.prompt_app.history.append_string(history_entry)
+
+                            self.echo_via_pager(result_text)
+
+                        # Display timing if enabled
+                        if self.pgspecial.timing_enabled:
+                            if query.total_time > 1:
+                                print(
+                                    "Time: %0.03fs (%s), executed in: %0.03fs (%s)"
+                                    % (
+                                        query.total_time,
+                                        duration_in_words(query.total_time),
+                                        query.execution_time,
+                                        duration_in_words(query.execution_time),
+                                    )
+                                )
+                            else:
+                                print("Time: %0.03fs" % query.total_time)
+
+                        # Handle query-related side effects
+                        if query.db_changed:
+                            with self._completer_lock:
+                                self.completer.reset_completions()
+                            self.refresh_completions(persist_priorities="keywords")
+                        elif query.meta_changed:
+                            self.refresh_completions(persist_priorities="all")
+
+                        # Success - exit retry loop
+                        self.is_llm_output = False
+                        return
+
+                    else:
+                        # SQL execution failed (query.successful = False)
+                        retry_count += 1
+                        self.llm_errors += 1
+
+                        # Extract error message from output
+                        error_msg = "\n".join(output) if output else "Unknown SQL error"
+                        click.secho(f"Error (attempt {retry_count}/{max_retries}): {error_msg}", err=True, fg="red")
+
+                        if retry_count >= max_retries:
+                            click.secho(f"Too Many Errors from LLM ({max_retries} attempts)", err=True, fg="red")
+                            self.is_llm_output = False
+                            return
+
+                        # Add error to history so LLM can see it
+                        error_feedback = f"SQL Error: {error_msg}\n\nThe query failed. Please fix the SQL and try again."
+                        add_sql_result_to_history(self, sql_query, error_feedback)
+
+                        # Change prompt for retry to explicitly request SQL fix
+                        text = f"The previous query failed with error: {error_msg}\n\nPlease generate ONLY valid SQL (no explanatory text, no natural language) to answer the original request: {original_text}"
+
+                        # Retry with error context
+                        continue
+
+                except KeyboardInterrupt:
+                    # User pressed CTRL-C to cancel LLM request
+                    self.is_llm_output = False
+                    click.secho("\nLLM request cancelled.", fg="yellow")
+                    return
+
+                except Exception as e:
+                    # LLM communication error (not SQL error)
+                    click.secho(f"Error communicating with LLM: {e}", fg="red")
+                    self.is_llm_output = False
+                    return
+
+            self.is_llm_output = False
+            return
+
+        if not self.is_llm_output:
+            query = MetaQuery(query=text, successful=False)
         try:
             if self.destructive_warning:
                 if (
@@ -954,6 +1182,47 @@ class PGCli:
             logger.error("traceback: %r", traceback.format_exc())
             click.secho(str(e), err=True, fg="red")
         else:
+            # Check if query failed with syntax error and looks like natural language
+            if not query.successful and not self.llm_mode:
+                from pgcli.llm.natural_language_detector import (
+                    is_syntax_error,
+                    looks_like_natural_language,
+                )
+
+                # Check if the error message indicates a syntax error
+                error_text = "\n".join(output) if output else ""
+
+                # Create a fake exception with the error text to check
+                class TempError(Exception):
+                    pass
+                temp_error = TempError(error_text)
+
+                logger.debug(f"Auto-detection on failed query: is_syntax={is_syntax_error(temp_error)}, looks_nl={looks_like_natural_language(text)}, text={text!r}")
+
+                if is_syntax_error(temp_error) and looks_like_natural_language(text):
+                    # Show the error first
+                    if output:
+                        self.echo_via_pager("\n".join(output))
+
+                    # Prompt user to send to LLM
+                    from pgcli.packages.prompt_utils import confirm
+
+                    click.echo()  # Blank line for spacing
+                    send_to_llm = confirm(
+                        "This looks like natural language. Send to LLM?",
+                        default=True,
+                    )
+
+                    if send_to_llm:
+                        # Enable LLM mode and retry
+                        self.llm_mode = True
+                        try:
+                            self.execute_command(text, handle_closed_connection)
+                        finally:
+                            # Keep LLM mode enabled for next queries
+                            pass
+                        return
+
             try:
                 if self.output_file and not text.startswith(("\\o ", "\\log-file", "\\? ", "\\echo ")):
                     try:
@@ -971,8 +1240,32 @@ class PGCli:
                     except OSError as e:
                         click.secho(str(e), err=True, fg="red")
                 else:
-                    if output:
-                        self.echo_via_pager("\n".join(output))
+                    if not query.successful and self.is_llm_output:
+                        if output:
+                            self.echo_via_pager("\n".join(output))
+                            self.llm_errors += 1
+                            if self.llm_errors > 3:
+                                click.secho("Too Many Errors from LLM", err=True, fg="red")
+                                return
+                            self.llm_mode = True
+                            resp = self.execute_command("\n".join(output), handle_closed_connection)
+                            self.llm_mode = False
+                            return resp;
+                        else:
+                            self.echo_via_pager("LLM output missing!")
+                    elif output:
+                        self.llm_errors = 0
+                        # Add manually executed SQL and results to LLM history
+                        # so LLM can reference them when toggled on later
+                        result_text = "\n".join(output)
+                        add_sql_result_to_history(
+                            self,
+                            text,
+                            result_text,
+                            execution_time=query.execution_time,
+                            total_time=query.total_time,
+                        )
+                        self.echo_via_pager(result_text)
 
                 # Log to file in addition to normal output
                 if self.log_file and not text.startswith(("\\o ", "\\log-file", "\\? ", "\\echo ")) and not text.strip() == "":
@@ -1048,10 +1341,18 @@ class PGCli:
             if choice == "force":
                 return True  # quit anyway
             if choice == "c":
+                # Temporarily disable LLM mode to execute COMMIT directly
+                llm_was_on = self.llm_mode
+                self.llm_mode = False
                 query = self.execute_command("commit")
+                self.llm_mode = llm_was_on
                 return query.successful  # quit only if query is successful
             if choice == "r":
+                # Temporarily disable LLM mode to execute ROLLBACK directly
+                llm_was_on = self.llm_mode
+                self.llm_mode = False
                 query = self.execute_command("rollback")
+                self.llm_mode = llm_was_on
                 return query.successful  # quit only if query is successful
 
     def run_cli(self):
@@ -1251,7 +1552,7 @@ class PGCli:
 
         with self._completer_lock:
             prompt_app = PromptSession(
-                lexer=PygmentsLexer(PostgresLexer),
+                lexer=ConditionalLexer(lambda: self.llm_mode),
                 reserve_space_for_menu=self.min_num_menu_lines,
                 message=get_message,
                 prompt_continuation=get_continuation,
@@ -1445,6 +1746,7 @@ class PGCli:
             callback,
             history=history,
             settings=self.settings,
+            llm_mode_callback=lambda: self.llm_mode,
         )
 
     def _on_completions_refreshed(self, new_completer, persist_priorities):
@@ -1718,6 +2020,11 @@ class PGCli:
     type=click.Path(exists=True, readable=True, dir_okay=False),
     help="execute commands from file, then exit. Multiple -f options are allowed.",
 )
+@click.option(
+    "--llm-log-dir",
+    default=None,
+    help="Specify the directory for LLM interaction logs. Use 'disable' to turn off logging.",
+)
 @click.argument("dbname", default=lambda: None, envvar="PGDATABASE", nargs=1)
 @click.argument("username", default=lambda: None, envvar="PGUSER", nargs=1)
 def cli(
@@ -1751,6 +2058,7 @@ def cli(
     force_destructive: bool,
     input_files: tuple,
     connect_timeout: int | None,
+    llm_log_dir: str,
 ):
     if version:
         print("Version:", __version__)
@@ -1817,6 +2125,7 @@ def cli(
         log_file=log_file,
         force_destructive=force_destructive,
         connect_timeout=connect_timeout,
+        llm_log_dir=llm_log_dir,
     )
 
     # Store commands for -c option (can be multiple)

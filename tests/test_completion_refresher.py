@@ -46,7 +46,7 @@ def test_refresh_called_once(refresher):
         assert len(actual) == 1
         assert len(actual[0]) == 4
         assert actual[0][3] == "Auto-completion refresh started in the background."
-        bg_refresh.assert_called_with(pgexecute, special, callbacks, None, None)
+        bg_refresh.assert_called_with(pgexecute, special, callbacks, None, None, None)
 
 
 def test_refresh_called_twice(refresher):

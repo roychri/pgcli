@@ -55,6 +55,7 @@ pgcli = "pgcli.main:cli"
 [project.optional-dependencies]
 keyring = ["keyring >= 12.2.0"]
 sshtunnel = ["sshtunnel >= 0.4.0"]
+llm = ["pydantic-ai >= 1.0.0", "tiktoken >= 0.5.0"]
 dev = [
     "behave>=1.2.4",
     "coverage>=7.2.7",
