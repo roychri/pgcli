@@ -1,8 +1,9 @@
 """Pydantic AI agent for SQL query generation."""
 import logging
-from typing import Optional, List, Tuple, Any
-from pydantic_ai import Agent
-from .models import PgcliDeps
+import re
+from typing import Optional, List, Tuple, Any, Union
+from pydantic_ai import Agent, ModelRetry, RunContext, ToolOutput
+from .models import PgcliDeps, SQLQuery
 from .config import LLMConfig, load_config
 from .token_counter import get_token_counter
 from .trimming import trim_message_history
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 # System prompt - emphasizes SQL-only output
-SYSTEM_PROMPT = """You are an SQL Expert that generates SQL queries based on user requests.
+SYSTEM_PROMPT = """You are an SQL Query Generator that can only speak SQL queries based on user requests.
 You have access to database introspection functions that you MUST call to gather vital information.
 
 Functions available:
@@ -37,8 +38,8 @@ Make sure the SQL returns data in a human readable format and augmented with any
 This includes but is not limited to: timezone, extracting data from json/jsonb fields, concatenating fields, etc.
 
 CRITICAL RULES - YOU WILL BE PENALIZED FOR VIOLATIONS:
-- Your response must ONLY contain valid SQL that can be executed directly
-- Your ENTIRE response must be executable SQL - NO English text before or after
+- Your response/output must ONLY contain valid SQL that can be executed directly and NOTHING ELSE
+- Your ENTIRE response must be executable SQL - NO text before or after except SQL comments
 - Use ONLY tables and columns that exist in the provided schema
 - Use PostgreSQL syntax
 - NEVER use tables or columns that don't exist in the schema
@@ -46,7 +47,7 @@ CRITICAL RULES - YOU WILL BE PENALIZED FOR VIOLATIONS:
 - Return only plain text and not markdown since DBs do not understand markdown
 - Do NOT include any explanatory text, natural language, or markdown outside of SQL comments
 - Do NOT start with phrases like "Here's the query:", "Perfect!", "Here's the CSV", or ANY English text
-- FIRST TOKEN must be either a comment "SELECT", "INSERT", "UPDATE", "DELETE", "--" (comment), or "\\copy"
+- VERY FIRST text must be either a "SELECT", "INSERT", "UPDATE", "DELETE", "--" (comment), or "\\copy"
 
 If the user asked to save data to CSV, use the following guidelines:
 - USE THE CLIENT-SIDE \\copy COMMAND - NEVER use server-side COPY commands
@@ -183,8 +184,16 @@ Required Steps:
 4. validating the assumptions.
 
 Use the functions to do all that. Like describing the enums before using them.
+
 IMPORTANT: Your response MUST ALWAYS be executable SQL with comments (-- ...).
 If we ask for the current time, return `select NOW()`.
+
+# REQUIRED OUTPUT FORMAT
+
+You can only speak SQL. SQL is your only language.
+
+When you have the final query, call the `submit_sql` tool with it. That is how your answer is delivered.
+The `sql` argument must contain ONLY the SQL (comments with -- are fine): no markdown fences, no prose.
 
 Example of VALID and INVALID responses:
 
@@ -201,7 +210,83 @@ SELECT ...
 """
 
 
-def create_agent(model: Any = None, config: Optional[LLMConfig] = None) -> Agent[PgcliDeps, str]:
+# Markdown code fence, optionally tagged as SQL: ```sql ... ```
+_FENCE_RE = re.compile(r"```[ \t]*(?:sql|postgres(?:ql)?|psql|pgsql)?[ \t]*\n(.*?)```", re.IGNORECASE | re.DOTALL)
+
+# Start of a plain-text reply that is unambiguously SQL. Deliberately strict: English
+# openers such as "Show me", "With the schema...", "Set up" must not be mistaken for SQL.
+# Anything else is sent back to the model, which can always use the submit_sql tool.
+_SQL_START_RE = re.compile(
+    r"""^\s*(?:
+        --|/\*|\\|\(
+        |select\b|insert\s+into\b|delete\s+from\b|update\s+\S+\s+set\b
+        |with\s+(?:recursive\s+)?\S+\s*(?:\(|as\b)
+        |explain\b|values\s*\(|create\s|alter\s|drop\s|truncate\s
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_NOT_SQL_RETRY = (
+    "Your reply was not executable SQL; it is sent to PostgreSQL as-is. "
+    "Call the `submit_sql` tool with only the SQL query (SQL comments are allowed). "
+    "Do not reply with prose or markdown."
+)
+
+
+def strip_sql_fences(text: str) -> Optional[str]:
+    """Return the SQL inside a single markdown code fence, or the text itself when unfenced.
+
+    Returns None when the text holds several fenced blocks, since there is no
+    safe way to pick one.
+    """
+    text = text.strip()
+    blocks = _FENCE_RE.findall(text)
+    if len(blocks) > 1:
+        return None
+    if blocks:
+        return blocks[0].strip()
+    return text
+
+
+def extract_sql(text: str) -> Optional[str]:
+    """Extract executable SQL from a plain-text model reply.
+
+    Accepts bare SQL, or prose around exactly one fenced SQL block.
+    Returns None when no SQL can be identified with confidence.
+    """
+    candidate = strip_sql_fences(text)
+    if candidate and _SQL_START_RE.match(candidate):
+        return candidate
+    return None
+
+
+def validate_sql_output(ctx: RunContext[PgcliDeps], output: Union[SQLQuery, str]) -> Union[SQLQuery, str]:
+    """Make sure the agent's final output is SQL before it reaches the database.
+
+    Raising ModelRetry sends the message back to the model, which tries again
+    within the same run instead of pgcli executing prose.
+    """
+    if isinstance(output, SQLQuery):
+        sql = strip_sql_fences(output.sql)
+        if not sql:
+            raise ModelRetry("The `sql` argument must contain exactly one SQL query and nothing else.")
+        return SQLQuery(sql=sql)
+
+    sql = extract_sql(output)
+    if sql is None:
+        logger.debug("Rejected non-SQL LLM output: %r", output)
+        raise ModelRetry(_NOT_SQL_RETRY)
+    return sql
+
+
+def output_to_sql(output: Union[SQLQuery, str, None]) -> Optional[str]:
+    """Return the SQL string from a validated agent output."""
+    if isinstance(output, SQLQuery):
+        return output.sql.strip()
+    return output.strip() if output else None
+
+
+def create_agent(model: Any = None, config: Optional[LLMConfig] = None) -> Agent[PgcliDeps, Union[SQLQuery, str]]:
     """Create a Pydantic AI agent for SQL query generation.
 
     :param model: The LLM model to use (e.g., 'openai:gpt-4', TestModel() for testing)
@@ -238,16 +323,25 @@ def create_agent(model: Any = None, config: Optional[LLMConfig] = None) -> Agent
 
                 # Configure reasoning settings
                 model_settings = OpenAIResponsesModelSettings(
-                    openai_reasoning_effort='medium',
+                    openai_reasoning_effort='minimal',
                     openai_reasoning_summary='detailed'  # Required to expose thinking
                 )
 
     agent = Agent(
         model,
         deps_type=PgcliDeps,
+        # The submit_sql tool is the intended way to answer. Plain text stays allowed
+        # because Anthropic rejects forced tool use while extended thinking is on;
+        # validate_sql_output keeps prose from reaching the database either way.
+        output_type=[
+            ToolOutput(SQLQuery, name="submit_sql", description="Submit the final SQL query to execute."),
+            str,
+        ],
+        output_retries=3,
         system_prompt=SYSTEM_PROMPT,
         model_settings=model_settings,
     )
+    agent.output_validator(validate_sql_output)
 
     # Register all 7 database introspection tools
     agent.tool(get_tables)
@@ -440,6 +534,24 @@ async def generate_sql_streaming(
         click.echo("\r\033[K", nl=False)  # \r = return to start, \033[K = clear to end
         click.secho(message, fg=color, dim=True, nl=False)
 
+    # Log what we're sending to the LLM
+    logger.debug("=== Sending to LLM ===")
+    logger.debug("User input: %s", user_input)
+    logger.debug("Message history: %d messages", len(message_history) if message_history else 0)
+
+    if message_history and len(message_history) > 0:
+        # Log the full history sent to the model
+        for idx, msg in enumerate(message_history):
+            if hasattr(msg, 'parts'):
+                for part_idx, part in enumerate(msg.parts):
+                    if hasattr(part, 'content'):
+                        logger.debug("Message %d (type: %s, part %d: %s): %s",
+                                   idx,
+                                   type(msg).__name__,
+                                   part_idx,
+                                   type(part).__name__,
+                                   str(part.content))
+
     try:
         thinking_shown = False
         generating_shown = False
@@ -477,7 +589,7 @@ async def generate_sql_streaming(
 
             # Get final result
             result = run.result
-            sql_query = result.output.strip() if result.output else None
+            sql_query = output_to_sql(result.output)
 
             # Clear the status line before returning (so final SQL output is clean)
             click.echo("\r\033[K", nl=False)
