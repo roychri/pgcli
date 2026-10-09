@@ -954,6 +954,10 @@ class PGCli:
         logger = self.logger
 
         if self.llm_mode:
+            # Skip empty input - just show prompt again
+            if not text or not text.strip():
+                return
+
             # LLM mode with retry mechanism on SQL errors
             max_retries = 3
             retry_count = 0

@@ -10,7 +10,7 @@ from pydantic_ai.models.test import TestModel
 
 # Import the Pydantic AI components
 from pgcli.llm.agent import create_agent
-from pgcli.llm.models import PgcliDeps
+from pgcli.llm.models import PgcliDeps, SQLQuery
 
 
 class TestAgentCreation:
@@ -152,8 +152,8 @@ class TestGenerateSQLFunction:
         from pgcli.llm.agent import create_agent
         from pgcli.llm.models import PgcliDeps
 
-        # Create agent with TestModel
-        agent = create_agent(model=TestModel())
+        # Create agent with TestModel answering through the submit_sql output tool
+        agent = create_agent(model=TestModel(custom_output_args={"sql": "SELECT * FROM test"}))
         deps = PgcliDeps(pgcli=mock_pgcli)
 
         # Run agent directly (since generate_sql would try to create a real model)
@@ -161,9 +161,8 @@ class TestGenerateSQLFunction:
 
         # Verify result
         assert result is not None
-        assert result.output is not None  # TestModel returns output
-        # TestModel returns a string with all tool results as JSON
-        assert isinstance(result.output, str)
+        assert isinstance(result.output, SQLQuery)
+        assert result.output.sql == "SELECT * FROM test"
 
     def test_generate_sql_requires_api_key(self):
         """Test that generate_sql raises error without API key."""
@@ -205,8 +204,8 @@ class TestMessageHistoryTracking:
         mock_pgexecute.conn = mock_conn
         cli.pgexecute = mock_pgexecute
 
-        # Create agent with TestModel
-        agent = create_agent(model=TestModel())
+        # Create agent with TestModel answering through the submit_sql output tool
+        agent = create_agent(model=TestModel(custom_output_args={"sql": "SELECT 1"}))
         deps = PgcliDeps(pgcli=cli)
 
         # Run agent
@@ -737,15 +736,15 @@ class TestToolsWithMockPgcli:
 
     def test_all_tools_execute_successfully(self, mock_pgcli):
         """Test that agent with mocked pgcli can call all tools without errors."""
-        agent = create_agent(TestModel())
+        agent = create_agent(TestModel(custom_output_args={"sql": "SELECT 1"}))
         deps = PgcliDeps(pgcli=mock_pgcli)
 
         # Run agent - TestModel will call tools automatically during execution
         result = agent.run_sync("List all tables and describe the users table", deps=deps)
 
-        # TestModel generates structured output, verify it exists
+        # TestModel calls every tool, then submits SQL through the output tool
         assert result is not None
-        assert result.output is not None
+        assert isinstance(result.output, SQLQuery)
 
 
 class TestLLMAutocomplete:
@@ -1427,3 +1426,79 @@ class TestNaturalLanguageDetector:
             exception = MockException(error_msg)
             assert not is_syntax_error(exception), \
                 f"Incorrectly detected non-syntax error: '{error_msg}'"
+
+
+class TestStructuredSQLOutput:
+    """The agent must hand back executable SQL, never prose or markdown."""
+
+    @pytest.mark.parametrize(
+        "text, expected",
+        [
+            ("SELECT 1;", "SELECT 1;"),
+            ("-- top customers\nSELECT 1", "-- top customers\nSELECT 1"),
+            ("WITH x AS (SELECT 1) SELECT * FROM x", "WITH x AS (SELECT 1) SELECT * FROM x"),
+            ("\\copy (SELECT 1) TO '/tmp/a.csv' CSV HEADER", "\\copy (SELECT 1) TO '/tmp/a.csv' CSV HEADER"),
+            ("```sql\nSELECT 2;\n```", "SELECT 2;"),
+            ("Perfect! Here it is:\n\n```sql\nSELECT 3;\n```\n\nThis query joins...", "SELECT 3;"),
+            ("Perfect! Now I can generate the query.", None),
+            ("Show me what you need", None),
+            ("With the schema in hand, here is my plan", None),
+            ("Option A:\n```sql\nSELECT 1\n```\nOption B:\n```sql\nSELECT 2\n```", None),
+        ],
+    )
+    def test_extract_sql(self, text, expected):
+        from pgcli.llm.agent import extract_sql
+
+        assert extract_sql(text) == expected
+
+    @staticmethod
+    def _run(responses):
+        """Run the agent against a scripted model; return (sql, messages seen by the model)."""
+        from pydantic_ai.messages import ModelResponse
+        from pydantic_ai.models.function import FunctionModel
+        from pgcli.llm.agent import output_to_sql
+
+        calls = []
+
+        def model(messages, info):
+            calls.append(messages)
+            return ModelResponse(parts=[responses[len(calls) - 1]])
+
+        agent = create_agent(FunctionModel(model))
+        result = agent.run_sync("top customers", deps=PgcliDeps(pgcli=Mock()))
+        return output_to_sql(result.output), calls
+
+    def test_submit_sql_tool_output(self):
+        from pydantic_ai.messages import ToolCallPart
+
+        sql, calls = self._run([ToolCallPart("submit_sql", {"sql": "SELECT 1"})])
+        assert sql == "SELECT 1"
+        assert len(calls) == 1
+
+    def test_fences_stripped_from_tool_output(self):
+        from pydantic_ai.messages import ToolCallPart
+
+        sql, _ = self._run([ToolCallPart("submit_sql", {"sql": "```sql\nSELECT 1\n```"})])
+        assert sql == "SELECT 1"
+
+    def test_fenced_sql_extracted_from_prose_without_retry(self):
+        from pydantic_ai.messages import TextPart
+
+        sql, calls = self._run([TextPart("Perfect! Here you go:\n```sql\nSELECT 1;\n```\nThis query...")])
+        assert sql == "SELECT 1;"
+        assert len(calls) == 1
+
+    def test_prose_is_sent_back_to_model_for_retry(self):
+        """Prose never reaches the database: the model is asked again within the same run."""
+        from pydantic_ai.messages import RetryPromptPart, TextPart, ToolCallPart
+
+        sql, calls = self._run(
+            [
+                TextPart("Perfect! Now I can generate the query for the top 5 customers."),
+                ToolCallPart("submit_sql", {"sql": "SELECT 1"}),
+            ]
+        )
+        assert sql == "SELECT 1"
+        assert len(calls) == 2
+        retry_parts = [p for p in calls[1][-1].parts if isinstance(p, RetryPromptPart)]
+        assert retry_parts and "submit_sql" in retry_parts[0].model_response()
