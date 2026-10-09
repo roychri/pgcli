@@ -56,8 +56,8 @@ class OpenAITokenCounter(TokenCounter):
                 # Try to get encoding for specific model
                 self._encoding = tiktoken.encoding_for_model(self.model)
             except KeyError:
-                # Fallback to cl100k_base (used by gpt-4, gpt-3.5-turbo)
-                self._encoding = tiktoken.get_encoding("cl100k_base")
+                # Fallback to o200k_base (used by gpt-4o and later), for models tiktoken doesn't know yet
+                self._encoding = tiktoken.get_encoding("o200k_base")
         except ImportError:
             # tiktoken not installed, will use character fallback
             self._encoding = None

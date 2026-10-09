@@ -1,5 +1,6 @@
 """Pydantic AI agent for SQL query generation."""
 import logging
+import os
 import re
 from typing import Optional, List, Tuple, Any, Union
 from pydantic_ai import Agent, ModelRetry, RunContext, ToolOutput
@@ -18,6 +19,9 @@ from .tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+# pydantic-ai prints an ASCII-art banner on the first run, which would land in the middle of the pgcli session
+os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
 
 
 # System prompt - emphasizes SQL-only output
@@ -286,6 +290,28 @@ def output_to_sql(output: Union[SQLQuery, str, None]) -> Optional[str]:
     return output.strip() if output else None
 
 
+def build_model_settings(config: LLMConfig) -> Optional[dict]:
+    """Model settings for the configured provider/model.
+
+    Uses pydantic-ai's unified ``thinking`` setting, which maps to each provider's own
+    option (Anthropic thinking, OpenAI reasoning effort, ...) and is ignored by models
+    that cannot think, so no per-model checks are needed here.
+    """
+    settings = {}
+    if config.thinking is not None:
+        settings["thinking"] = config.thinking
+
+    # OpenAI only returns reasoning content (shown as "Thinking...") when a summary is requested,
+    # and rejects the option for models that don't reason.
+    if config.provider == "openai" and config.thinking is not False:
+        from pydantic_ai.models import infer_model_profile
+
+        if infer_model_profile(config.get_model_string()).get("openai_supports_reasoning", False):
+            settings["openai_reasoning_summary"] = "auto"
+
+    return settings or None
+
+
 def create_agent(model: Any = None, config: Optional[LLMConfig] = None) -> Agent[PgcliDeps, Union[SQLQuery, str]]:
     """Create a Pydantic AI agent for SQL query generation.
 
@@ -300,32 +326,7 @@ def create_agent(model: Any = None, config: Optional[LLMConfig] = None) -> Agent
             config = load_config()
         model = config.get_model_string()
 
-    # Configure model settings for thinking/reasoning (if supported)
-    model_settings = None
-    if config and isinstance(model, str):
-        # Enable thinking for Anthropic Claude Sonnet 4+
-        if config.provider == "anthropic" and ("claude-sonnet-4" in config.model or "claude-4" in config.model):
-            from pydantic_ai.models.anthropic import AnthropicModelSettings
-            model_settings = AnthropicModelSettings(
-                anthropic_thinking={'type': 'enabled', 'budget_tokens': 2048}
-            )
-
-        # Enable reasoning for OpenAI reasoning models (gpt-5, o3, o4)
-        # IMPORTANT: Use OpenAIResponsesModel for these models to expose ThinkingPart objects
-        # Note: o1-series models are NOT supported by Responses API
-        elif config.provider == "openai":
-            reasoning_models = ['gpt-5', 'o3', 'o4']
-            if any(rm in config.model.lower() for rm in reasoning_models):
-                from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIResponsesModelSettings
-
-                # Create model instance (not string!)
-                model = OpenAIResponsesModel(config.model)
-
-                # Configure reasoning settings
-                model_settings = OpenAIResponsesModelSettings(
-                    openai_reasoning_effort='minimal',
-                    openai_reasoning_summary='detailed'  # Required to expose thinking
-                )
+    model_settings = build_model_settings(config) if config and isinstance(model, str) else None
 
     agent = Agent(
         model,
@@ -337,7 +338,7 @@ def create_agent(model: Any = None, config: Optional[LLMConfig] = None) -> Agent
             ToolOutput(SQLQuery, name="submit_sql", description="Submit the final SQL query to execute."),
             str,
         ],
-        output_retries=3,
+        retries={"output": 3},
         system_prompt=SYSTEM_PROMPT,
         model_settings=model_settings,
     )
@@ -419,7 +420,6 @@ def add_sql_result_to_history(
     trimmed_tokens = counter.count_tokens(trimmed_result)
 
     # Debug output showing what's being added to history
-    import os
     format_type = os.environ.get('PGCLI_LLM_RESULT_FORMAT', 'tabular')
 
     if was_trimmed:

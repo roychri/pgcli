@@ -61,7 +61,7 @@ class TestConfigLoading:
 
         config = LLMConfig()
         assert config.provider == "anthropic"
-        assert config.model == "claude-sonnet-4-5-20250929"
+        assert config.model == "claude-sonnet-5-5"
 
     def test_config_can_use_openai(self):
         """Verify that config can be set to OpenAI."""
@@ -69,7 +69,7 @@ class TestConfigLoading:
 
         config = LLMConfig(provider="openai")
         assert config.provider == "openai"
-        assert config.model == "gpt-4o-mini"
+        assert config.model == "gpt-6-luna"
 
     def test_config_get_model_string(self):
         """Verify that get_model_string returns correct format."""
@@ -114,7 +114,7 @@ class TestConfigLoading:
         from pgcli.llm.config import LLMConfig
 
         config = LLMConfig(provider="openai", model="gpt-4o")
-        assert config.get_context_limit() == 115000  # 90% of 128K
+        assert config.get_context_limit() == 115200  # 90% of 128K
 
     def test_config_get_context_limit_custom(self):
         """Verify get_context_limit respects custom max_context_tokens."""
@@ -1502,3 +1502,113 @@ class TestStructuredSQLOutput:
         assert len(calls) == 2
         retry_parts = [p for p in calls[1][-1].parts if isinstance(p, RetryPromptPart)]
         assert retry_parts and "submit_sql" in retry_parts[0].model_response()
+
+
+class TestModelSupport:
+    """Current Claude and OpenAI models: defaults, thinking settings and context budgets."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for var in ("PGCLI_LLM_PROVIDER", "PGCLI_LLM_MODEL", "PGCLI_LLM_THINKING", "PGCLI_LLM_MAX_CONTEXT_TOKENS"):
+            monkeypatch.delenv(var, raising=False)
+
+    @pytest.mark.parametrize(
+        "provider, model",
+        [
+            ("anthropic", "claude-opus-5-5"),
+            ("anthropic", "claude-sonnet-5-5"),
+            ("anthropic", "claude-haiku-5-5"),
+            ("openai", "gpt-6-luna"),
+            ("openai", "gpt-6-sol"),
+            ("openai", "gpt-6-astra"),
+            ("openai", "gpt-6.1-sol"),
+        ],
+    )
+    def test_current_models_are_known(self, provider, model):
+        """pydantic-ai can build these models and knows they can think."""
+        from pydantic_ai.models import infer_model_profile
+        from pgcli.llm.config import LLMConfig
+
+        config = LLMConfig(provider=provider, model=model, api_key="test-key")
+        profile = infer_model_profile(config.get_model_string())
+        assert profile.get("supports_thinking") or profile.get("thinking_always_enabled")
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            (None, "low"),
+            ("", "low"),
+            ("off", False),
+            ("false", False),
+            ("on", True),
+            ("default", None),
+            ("high", "high"),
+            ("XHIGH", "xhigh"),
+            ("bogus", "low"),
+        ],
+    )
+    def test_parse_thinking(self, value, expected):
+        from pgcli.llm.config import parse_thinking
+
+        assert parse_thinking(value) == expected
+
+    def test_thinking_from_env(self, monkeypatch):
+        from pgcli.llm.config import LLMConfig
+
+        monkeypatch.setenv("PGCLI_LLM_THINKING", "off")
+        assert LLMConfig().thinking is False
+
+    def test_anthropic_settings_use_unified_thinking(self):
+        from pgcli.llm.agent import build_model_settings
+        from pgcli.llm.config import LLMConfig
+
+        config = LLMConfig(provider="anthropic", model="claude-opus-5-5", api_key="test-key")
+        assert build_model_settings(config) == {"thinking": "low"}
+
+    def test_openai_reasoning_model_requests_summary(self):
+        from pgcli.llm.agent import build_model_settings
+        from pgcli.llm.config import LLMConfig
+
+        config = LLMConfig(provider="openai", model="gpt-6-luna", api_key="test-key", thinking="medium")
+        assert build_model_settings(config) == {"thinking": "medium", "openai_reasoning_summary": "auto"}
+
+    def test_openai_non_reasoning_model_gets_no_summary(self):
+        from pgcli.llm.agent import build_model_settings
+        from pgcli.llm.config import LLMConfig
+
+        config = LLMConfig(provider="openai", model="gpt-4o-mini", api_key="test-key")
+        assert build_model_settings(config) == {"thinking": "low"}
+
+    def test_thinking_off(self):
+        from pgcli.llm.agent import build_model_settings
+        from pgcli.llm.config import LLMConfig
+
+        config = LLMConfig(provider="openai", model="gpt-6-sol", api_key="test-key", thinking=False)
+        assert build_model_settings(config) == {"thinking": False}
+
+    @pytest.mark.parametrize(
+        "provider, model, expected",
+        [
+            ("anthropic", "claude-sonnet-5-5", 180000),  # 1M window, capped at the default budget
+            ("openai", "gpt-6-luna", 180000),  # 1.05M window, capped
+            ("openai", "gpt-4o-mini", 115200),  # 90% of 128K
+            ("anthropic", "claude-unreleased-9", 180000),  # unknown model: provider fallback
+            ("ollama", "llama3.2", 1800),  # 90% of Ollama's 2K default
+        ],
+    )
+    def test_context_limit(self, provider, model, expected):
+        from pgcli.llm.config import LLMConfig
+
+        assert LLMConfig(provider=provider, model=model).get_context_limit() == expected
+
+    def test_context_limit_env_override(self, monkeypatch):
+        from pgcli.llm.config import LLMConfig
+
+        monkeypatch.setenv("PGCLI_LLM_MAX_CONTEXT_TOKENS", "500000")
+        assert LLMConfig(provider="anthropic", model="claude-opus-5-5").get_context_limit() == 500000
+
+    def test_token_counter_handles_new_openai_models(self):
+        from pgcli.llm.token_counter import OpenAITokenCounter
+
+        counter = OpenAITokenCounter(model="gpt-6-luna")
+        assert counter.count_tokens("SELECT 1") > 0
