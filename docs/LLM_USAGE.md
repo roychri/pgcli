@@ -281,10 +281,11 @@ WHERE deleted_at IS NOT NULL;
 
 **Reasoning Model Support:**
 
-The **"Thinking..."** phase only appears with models that support extended reasoning:
-- **Anthropic:** Claude Sonnet 4.0+ (thinking automatically enabled)
-- **OpenAI:** gpt-5-*, o3-*, o4-* series (reasoning automatically configured)
-  - Note: o1-series models are NOT currently supported due to API limitations
+The **"Thinking..."** phase only appears with models that support thinking/reasoning,
+such as Claude Opus/Sonnet/Haiku 5.5 and OpenAI's GPT-6 models (Luna, Sol, Astra).
+Thinking is enabled at `low` effort by default and is ignored by models that can't think.
+Change it with `PGCLI_LLM_THINKING` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+or `default` for the model's own default).
 
 **Complete Flow Example:**
 
@@ -937,7 +938,7 @@ source ~/.bashrc
      -H "x-api-key: $ANTHROPIC_API_KEY" \
      -H "anthropic-version: 2023-06-01" \
      -H "content-type: application/json" \
-     -d '{"model":"claude-sonnet-4-5-20250929","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
+     -d '{"model":"claude-sonnet-5-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
    ```
 
 2. **Check internet connection**
@@ -946,7 +947,7 @@ source ~/.bashrc
 
 4. **Try a different model:**
    ```bash
-   export PGCLI_LLM_MODEL="claude-haiku-4-0"  # Cheaper, faster
+   export PGCLI_LLM_MODEL="claude-haiku-5-5"  # Cheaper, faster
    ```
 
 ### Problem: LLM generates wrong SQL

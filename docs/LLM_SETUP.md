@@ -23,7 +23,8 @@ pip install -U "pgcli[llm]"
 ```
 
 This installs:
-- `pydantic-ai` - Multi-provider LLM framework
+- `pydantic-ai-slim` with the Anthropic and OpenAI clients - Multi-provider LLM framework
+  (Ollama uses the OpenAI-compatible client)
 - `tiktoken` - Token counting for OpenAI models
 
 **Choose your provider:**
@@ -77,18 +78,19 @@ source ~/.bashrc
 
 ### 3. Choose a Model (Optional)
 
-**Default:** `claude-sonnet-4-5-20250929` (Claude Sonnet 4.5)
+**Default:** `claude-sonnet-5-5` (Claude Sonnet 5.5)
 
-**Available models:**
-- `claude-sonnet-4-5-20250929` - Latest Sonnet (200K context, best balance)
-- `claude-sonnet-4-0` - Sonnet 4.0 (200K context)
-- `claude-opus-4-0` - Most capable (200K context, slower)
-- `claude-haiku-4-0` - Fastest (200K context, cheaper)
+**Current models:**
+- `claude-opus-5-5` - Most capable, for long, complex work ($4/$20 per million tokens)
+- `claude-sonnet-5-5` - Best balance of speed and intelligence ($2/$10)
+- `claude-haiku-5-5` - Fastest and cheapest ($0.10/$0.50)
+
+Any model name pydantic-ai supports works, including older ones such as `claude-sonnet-4-5`.
 
 **To change model:**
 
 ```bash
-export PGCLI_LLM_MODEL="claude-opus-4-0"
+export PGCLI_LLM_MODEL="claude-opus-5-5"
 ```
 
 ### 4. Verify Setup
@@ -102,10 +104,10 @@ pgcli postgresql://localhost/mydb
 
 ### Features
 
-- ✅ **Context Window:** 200,000 tokens (180K usable after 90% limit)
+- ✅ **Context Window:** 1M tokens (pgcli sends at most 180K of history by default)
 - ✅ **Function Calling:** Excellent (optimized for tools)
-- ✅ **Reasoning:** Best-in-class for SQL generation
-- ✅ **Cost:** $3/$15 per million tokens (input/output) for Sonnet
+- ✅ **Thinking:** Enabled at `low` effort by default (see `PGCLI_LLM_THINKING`)
+- ✅ **Cost:** $2/$10 per million tokens (input/output) for Sonnet 5.5
 
 ---
 
@@ -140,19 +142,21 @@ source ~/.bashrc
 
 ### 3. Choose a Model (Optional)
 
-**Default:** `gpt-4o-mini` (Cost-effective, fast)
+**Default:** `gpt-6-luna` (efficient, low cost)
 
-**Available models:**
-- `gpt-4o-mini` - Best value (128K context, $0.15/$0.60 per million)
-- `gpt-4o` - Most capable (128K context, $2.50/$10 per million)
-- `gpt-4-turbo` - Previous generation (128K context)
-- `o1-preview` - Reasoning model (128K context, expensive)
-- `o1-mini` - Reasoning mini (128K context)
+**Current models:**
+- `gpt-6-luna` - Efficient model for focused, high-volume tasks ($0.10/$0.50 per million tokens)
+- `gpt-6-sol` - Complex coding and agentic workflows ($2/$10)
+- `gpt-6.1-sol` - Newer Sol, lower cost than Astra for professional work ($2/$10)
+- `gpt-6-astra` - Most capable, for the hardest end-to-end work ($10/$50)
+
+Any model name pydantic-ai supports works, including older ones such as `gpt-4o-mini`.
+OpenAI models are called through the Responses API.
 
 **To change model:**
 
 ```bash
-export PGCLI_LLM_MODEL="gpt-4o"
+export PGCLI_LLM_MODEL="gpt-6-sol"
 ```
 
 ### 4. Verify Setup
@@ -166,11 +170,10 @@ pgcli postgresql://localhost/mydb
 
 ### Features
 
-- ✅ **Context Window:** 128,000 tokens (115K usable after 90% limit)
+- ✅ **Context Window:** 1.05M tokens (pgcli sends at most 180K of history by default)
 - ✅ **Function Calling:** Excellent
-- ✅ **Reasoning:** Very good for SQL
-- ✅ **Cost:** $0.15/$0.60 per million tokens (gpt-4o-mini)
-- ✅ **Speed:** Very fast responses
+- ✅ **Reasoning:** Enabled at `low` effort by default (see `PGCLI_LLM_THINKING`)
+- ✅ **Cost:** $0.10/$0.50 per million tokens (gpt-6-luna)
 
 ---
 
@@ -254,17 +257,17 @@ pgcli postgresql://localhost/mydb
 
 | Feature | Anthropic (Claude) | OpenAI (GPT) | Ollama (Local) |
 |---------|-------------------|--------------|----------------|
-| **Context Window** | 200K tokens | 128K tokens | 2K-8K tokens |
-| **Usable Context** | 180K (90%) | 115K (90%) | 1.8K-7.2K (90%) |
-| **SQL Result Limit** | 18K tokens | 11.5K tokens | 180-720 tokens |
+| **Context Window** | 1M tokens | 1.05M tokens | 2K-8K tokens |
+| **History Sent** | up to 180K | up to 180K | 1.8K-7.2K (90%) |
+| **SQL Result Limit** | 18K tokens | 18K tokens | 180-720 tokens |
 | **Function Calling** | Excellent | Excellent | Good |
 | **SQL Quality** | Excellent | Very Good | Good |
 | **Speed** | Fast | Very Fast | Variable |
-| **Cost (per M tokens)** | $3/$15 | $0.15/$0.60 (mini) | Free |
+| **Cost (per M tokens)** | $2/$10 (Sonnet) | $0.10/$0.50 (Luna) | Free |
 | **Privacy** | Cloud | Cloud | Local |
 | **Setup Difficulty** | Easy | Easy | Medium |
 | **Internet Required** | Yes | Yes | No (after setup) |
-| **Default Model** | claude-sonnet-4-5 | gpt-4o-mini | llama3.2 |
+| **Default Model** | claude-sonnet-5-5 | gpt-6-luna | llama3.2 |
 
 ### Which to Choose?
 
@@ -276,7 +279,7 @@ pgcli postgresql://localhost/mydb
 
 **Use OpenAI (GPT) if:**
 - You want fast responses
-- You prefer lower costs (gpt-4o-mini)
+- You prefer lower costs (gpt-6-luna)
 - You're already using OpenAI services
 - **Good for high-volume usage**
 
@@ -303,18 +306,20 @@ pgcli postgresql://localhost/mydb
 | Variable | Description | Default | Example |
 |----------|-------------|---------|---------|
 | `PGCLI_LLM_PROVIDER` | LLM provider to use | `anthropic` | `openai`, `ollama` |
-| `PGCLI_LLM_MODEL` | Model name (provider-specific) | See defaults | `gpt-4o`, `llama3.2` |
+| `PGCLI_LLM_MODEL` | Model name (provider-specific) | See defaults | `claude-opus-5-5`, `gpt-6-sol`, `llama3.2` |
+| `PGCLI_LLM_THINKING` | Thinking/reasoning effort | `low` | `off`, `on`, `default`, `minimal`, `medium`, `high`, `xhigh` |
+| `PGCLI_LLM_MAX_CONTEXT_TOKENS` | Max tokens of history sent per request | 90% of the model's window, capped at 180K | `50000`, `500000` |
 | `PGCLI_LLM_LOG_DIR` | Directory for LLM interaction logs | None | `/tmp/pgcli-llm` |
 | `PGCLI_LLM_API_KEY` | Generic API key (fallback) | None | `your-key` |
 
 ### Provider-Specific Defaults
 
 **Anthropic:**
-- Model: `claude-sonnet-4-5-20250929`
+- Model: `claude-sonnet-5-5`
 - API Key from: `ANTHROPIC_API_KEY`
 
 **OpenAI:**
-- Model: `gpt-4o-mini`
+- Model: `gpt-6-luna`
 - API Key from: `OPENAI_API_KEY`
 
 **Ollama:**
@@ -328,10 +333,14 @@ pgcli postgresql://localhost/mydb
 
 ### Custom Context Limits
 
-Override the automatic context limit (90% of model max):
+By default pgcli sends at most 90% of the model's context window, capped at 180K
+tokens, since resending a million tokens of history with every question is slow and
+costly. Context windows come from pydantic-ai's model data (`genai-prices`).
+Override the limit:
 
 ```bash
-export PGCLI_LLM_MAX_CONTEXT_TOKENS=50000
+export PGCLI_LLM_MAX_CONTEXT_TOKENS=50000   # smaller and cheaper
+export PGCLI_LLM_MAX_CONTEXT_TOKENS=500000  # use more of a 1M-token window
 ```
 
 **Use cases:**
@@ -359,7 +368,7 @@ Create `~/.config/pgcli/llm_config.env`:
 # LLM Configuration
 PGCLI_LLM_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-api03-...
-PGCLI_LLM_MODEL=claude-sonnet-4-5-20250929
+PGCLI_LLM_MODEL=claude-sonnet-5-5
 ```
 
 Then source it:

@@ -55,7 +55,7 @@ If you already know how to install python packages, then you can simply do:
 
     $ pip install -U "pgcli[llm]"
 
-This installs additional dependencies for LLM support (pydantic-ai, tiktoken).
+This installs additional dependencies for LLM support (pydantic-ai-slim, tiktoken).
 See `docs/LLM_SETUP.md`_ for provider setup.
 
 If you don't know how to install python packages, please check the
